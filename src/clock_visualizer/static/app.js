@@ -3,7 +3,7 @@
 const $ = id => document.getElementById(id);
 const STORAGE_KEY = "logical-clock-workspace-v1";
 const clone = value => structuredClone(value);
-const fresh = () => ({mode: "lamport", processes: [], events: [], allowInternal: true});
+const fresh = () => ({mode: "lamport", processes: [], events: [], allowInternal: true, pending: [], delayMin: 1, delayMax: 5});
 const titles = {lamport: "Lamport clocks", vector: "Vector clocks", modified: "Modified vector clocks"};
 const explanations = {
   lamport: ["A scalar clock that respects causal order.", "One counter per process.", "Internal and send events: L ← L + 1. Receive a message timestamped t: L ← max(L, t) + 1. All clocks start at zero. L(a) < L(b) alone does not establish that a caused b."],
@@ -14,6 +14,8 @@ let state = fresh();
 let computed = {events: []};
 let history = [];
 let busy = true;
+let deliveryTimer;
+const pendingDeliveries = () => state.pending || [];
 
 function error(message = "") {
   $("error").textContent = message;
@@ -40,7 +42,7 @@ async function calculate(next) {
   return result;
 }
 
-async function change(edit, {undo = false} = {}) {
+async function change(edit, {undo = false, recordHistory = true} = {}) {
   if (busy) return false;
   busy = true;
   error();
@@ -50,7 +52,7 @@ async function change(edit, {undo = false} = {}) {
     const candidate = edit(next) || next;
     const result = await calculate(candidate);
     if (undo) history.pop();
-    else history.push(clone(state));
+    else if (recordHistory) history.push(clone(state));
     if (history.length > 100) history.shift();
     state = {...candidate, mode: result.mode, processes: result.processes};
     computed = result;
@@ -63,6 +65,33 @@ async function change(edit, {undo = false} = {}) {
   } finally {
     busy = false;
     renderControls();
+    scheduleDeliveries();
+  }
+}
+
+function scheduleDeliveries() {
+  clearTimeout(deliveryTimer);
+  const pending = pendingDeliveries();
+  if (!pending.length) return;
+  const deadline = Math.min(...pending.map(item => item.deliverAt));
+  deliveryTimer = setTimeout(deliverMessages, Math.max(0, deadline - Date.now()));
+}
+
+async function deliverMessages() {
+  if (busy) {
+    deliveryTimer = setTimeout(deliverMessages, 50);
+    return;
+  }
+  const now = Date.now();
+  const delivered = await change(next => {
+    const due = next.pending.filter(item => item.deliverAt <= now).sort((a, b) => a.deliverAt - b.deliverAt);
+    next.events.push(...due.map(({deliverAt, ...event}) => event));
+    next.pending = next.pending.filter(item => item.deliverAt > now);
+  }, {recordHistory: false});
+  // Keep the same scheduled events for retry if the server was unreachable.
+  if (!delivered) {
+    clearTimeout(deliveryTimer);
+    deliveryTimer = setTimeout(deliverMessages, 1000);
   }
 }
 
@@ -90,19 +119,39 @@ function destinations() {
 }
 
 function renderControls() {
+  const inFlight = pendingDeliveries().length;
+  const editingLocked = busy || inFlight > 0;
   $("mode").value = state.mode;
   $("allow-internal").checked = state.allowInternal;
   options("internal-process", state.processes);
   options("message-from", state.processes);
   destinations();
-  $("mode").disabled = busy;
-  $("allow-internal").disabled = busy;
-  $("process-name").disabled = busy || state.processes.length >= 16;
-  $("add-process").disabled = busy || state.processes.length >= 16;
-  $("internal-process").disabled = busy || !state.allowInternal || !state.processes.length;
-  $("add-internal").disabled = busy || !state.allowInternal || !state.processes.length || state.events.length >= 500;
+  $("mode").disabled = editingLocked;
+  $("allow-internal").disabled = editingLocked;
+  $("process-name").disabled = editingLocked || state.processes.length >= 16;
+  $("add-process").disabled = editingLocked || state.processes.length >= 16;
+  const missing = ["P1", "P2", "P3", "P4"].filter(name => !state.processes.some(process => process.name === name));
+  $("quick-processes").disabled = editingLocked || !missing.length || state.processes.length + missing.length > 16;
+  $("internal-process").disabled = editingLocked || !state.allowInternal || !state.processes.length;
+  $("add-internal").disabled = editingLocked || !state.allowInternal || !state.processes.length || state.events.length >= 500;
   $("internal-hint").textContent = state.allowInternal ? "An event visible only to its own process." : "Internal event creation is disabled. Existing events still count.";
-  for (const id of ["message-from", "message-to", "send-message"]) $(id).disabled = busy || state.processes.length < 2 || state.events.length > 498;
+  for (const id of ["message-from", "message-to", "send-message"]) $(id).disabled = editingLocked || state.processes.length < 2 || state.events.length > 498;
+  const senderList = $("broadcast-processes");
+  const selected = new Set([...senderList.querySelectorAll("input:checked")].map(input => input.value));
+  senderList.replaceChildren();
+  for (const process of state.processes) {
+    const label = document.createElement("label");
+    const input = document.createElement("input");
+    input.type = "checkbox";
+    input.value = process.id;
+    input.checked = selected.has(process.id);
+    label.append(input, document.createTextNode(process.name));
+    senderList.append(label);
+  }
+  if (!state.processes.length) senderList.textContent = "Add processes to choose senders.";
+  $("broadcast-senders").disabled = editingLocked || state.processes.length < 2;
+  for (const id of ["delay-min", "delay-max", "broadcast-message"]) $(id).disabled = editingLocked || state.processes.length < 2;
+  $("broadcast-status").textContent = inFlight ? `${inFlight} deliveries in flight. Undo or reset cancels pending messages.` : "No messages in flight.";
   $("undo").disabled = busy || !history.length;
   $("reset").disabled = busy || (!state.processes.length && !state.events.length);
   $("example").disabled = busy;
@@ -129,9 +178,13 @@ function renderDiagram() {
   const columns = new Map(state.processes.map(process => [process.id, 0]));
   const longest = Math.max(1, ...computed.events.map(event => timestamp(event.timestamp).length));
   const spacing = Math.max(90, longest * 7.2 + 30);
+  const batches = new Map();
+  const metadata = new Map(state.events.map(event => [event.id, event]));
   for (const event of computed.events) {
     const sender = positions.get(event.send);
-    const column = Math.max(columns.get(event.process) + 1, sender ? sender.column + 1 : 1);
+    const batch = metadata.get(event.id)?.batch;
+    if (batch && !batches.has(batch)) batches.set(batch, Math.max(0, ...columns.values()) + 1);
+    const column = Math.max(columns.get(event.process) + 1, sender ? sender.column + 1 : 1, batch ? batches.get(batch) : 1);
     columns.set(event.process, column);
     positions.set(event.id, {column, x: 145 + column * spacing, y: rows.get(event.process)});
   }
@@ -162,7 +215,8 @@ function renderDiagram() {
     const direction = Math.sign(to.y - from.y);
     const number = ++messageNumber;
     svg.append(svgElement("path", {d: `M ${from.x + 5} ${from.y + direction * 8} L ${to.x - 5} ${to.y - direction * 10}`, class: "message-line", "marker-end": "url(#arrow)"}));
-    svg.append(svgElement("text", {x: (from.x + to.x) / 2 + 9, y: (from.y + to.y) / 2, class: "message-label"}, `m${number}`));
+    const delay = metadata.get(event.id)?.delaySeconds;
+    svg.append(svgElement("text", {x: (from.x + to.x) / 2 + 9, y: (from.y + to.y) / 2, class: "message-label"}, `m${number}${delay !== undefined ? ` · ${delay.toFixed(2)}s` : ""}`));
   }
   computed.events.forEach((event, index) => {
     const {x, y} = positions.get(event.id);
@@ -182,11 +236,17 @@ function renderLedger() {
   rows.replaceChildren();
   const names = new Map(state.processes.map(process => [process.id, process.name]));
   const eventNames = new Map(computed.events.map((event, i) => [event.id, `e${i + 1}`]));
-  const receives = new Map(computed.events.filter(event => event.kind === "receive").map(event => [event.send, event.id]));
+  const receives = new Map();
+  const metadata = new Map(state.events.map(event => [event.id, event]));
+  for (const event of computed.events.filter(event => event.kind === "receive")) {
+    if (!receives.has(event.send)) receives.set(event.send, []);
+    receives.get(event.send).push(eventNames.get(event.id));
+  }
   for (const event of computed.events) {
     const row = document.createElement("tr");
-    const message = event.kind === "receive" ? `from ${eventNames.get(event.send)}` : receives.has(event.id) ? `to ${eventNames.get(receives.get(event.id))}` : "—";
-    for (const text of [eventNames.get(event.id), names.get(event.process), event.kind, message, timestamp(event.timestamp)]) {
+    const delay = metadata.get(event.id)?.delaySeconds;
+    const message = event.kind === "receive" ? `from ${eventNames.get(event.send)}${delay !== undefined ? ` · ${delay.toFixed(2)}s` : ""}` : receives.has(event.id) ? `to ${receives.get(event.id).join(", ")}` : "—";
+    for (const text of [eventNames.get(event.id), names.get(event.process), event.broadcast ? "broadcast send" : event.kind, message, timestamp(event.timestamp)]) {
       const cell = document.createElement("td");
       cell.textContent = text;
       row.append(cell);
@@ -218,6 +278,40 @@ $("process-form").addEventListener("submit", async event => {
     $("process-name").value = "";
     $("process-name").focus();
   }
+});
+$("quick-processes").addEventListener("click", () => change(next => {
+  const missing = ["P1", "P2", "P3", "P4"].filter(name => !next.processes.some(process => process.name === name));
+  if (next.processes.length + missing.length > 16) throw new Error("There is not enough room to add P1–P4.");
+  next.processes.push(...missing.map(name => ({id: crypto.randomUUID(), name})));
+}));
+$("broadcast-form").addEventListener("submit", event => {
+  event.preventDefault();
+  if (busy || pendingDeliveries().length) return;
+  const senders = [...$("broadcast-processes").querySelectorAll("input:checked")].map(input => input.value);
+  const min = $("delay-min").valueAsNumber, max = $("delay-max").valueAsNumber;
+  if (!senders.length) return error("Choose at least one broadcast sender.");
+  if (!Number.isFinite(min) || !Number.isFinite(max) || min < 0.01 || max > 3600 || min > max) {
+    return error("Choose a delay interval from 0.01 to 3600 seconds, with minimum ≤ maximum.");
+  }
+  // Reserve capacity for every receive before starting any send.
+  if (state.events.length + senders.length * state.processes.length > 500) {
+    return error("This broadcast would exceed the 500-event limit. Choose fewer senders or reset the execution.");
+  }
+  const started = Date.now();
+  const batch = crypto.randomUUID();
+  change(next => {
+    next.delayMin = min;
+    next.delayMax = max;
+    next.pending = [];
+    for (const process of senders) {
+      const id = crypto.randomUUID();
+      next.events.push({id, process, kind: "send", broadcast: true, batch});
+      for (const recipient of next.processes.filter(recipient => recipient.id !== process)) {
+        const delaySeconds = min + Math.random() * (max - min);
+        next.pending.push({id: crypto.randomUUID(), process: recipient.id, kind: "receive", send: id, delaySeconds, deliverAt: started + delaySeconds * 1000});
+      }
+    }
+  });
 });
 $("internal-form").addEventListener("submit", event => {
   event.preventDefault();
@@ -272,9 +366,17 @@ async function start() {
   try {
     if (saved !== undefined) {
       if (!saved || typeof saved.allowInternal !== "boolean") throw new Error("Invalid saved settings.");
+      const pending = saved.pending ?? [];
+      if (!Array.isArray(pending) || pending.some(item => !item || item.kind !== "receive" || !Number.isFinite(item.deliverAt) || !Number.isFinite(item.delaySeconds) || item.delaySeconds < 0.01 || item.delaySeconds > 3600)) {
+        throw new Error("Invalid pending deliveries.");
+      }
+      // Validate future deliveries too, before resuming a restored broadcast.
+      if (pending.length) await calculate({...saved, events: [...saved.events, ...pending]});
       const result = await calculate(saved);
-      state = {...saved, mode: result.mode, processes: result.processes};
+      state = {...fresh(), ...saved, pending, mode: result.mode, processes: result.processes};
       computed = result;
+      $("delay-min").value = state.delayMin;
+      $("delay-max").value = state.delayMax;
       $("status").textContent = "Restored from this browser";
     } else {
       computed = await calculate(state);
@@ -286,6 +388,7 @@ async function start() {
   } finally {
     busy = false;
     render();
+    scheduleDeliveries();
   }
 }
 start();

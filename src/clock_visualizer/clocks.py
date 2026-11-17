@@ -15,7 +15,8 @@ def calculate(payload: dict) -> dict:
     """Return event clock snapshots for an execution, without mutating input.
 
     Events are topologically ordered: each receive references a prior send.
-    A send has at most one receiver. Vector components follow process order.
+    Broadcast sends may have one receive per other process.
+    Vector components follow process order.
     """
     if not isinstance(payload, dict):
         raise ValueError("The execution must be a JSON object.")
@@ -39,7 +40,7 @@ def calculate(payload: dict) -> dict:
         names.add(name)
         normalized.append({"id": identifier, "name": name})
     clocks = [0 if mode == "lamport" else [0] * len(indices) for _ in indices]
-    seen, received, result = {}, set(), []
+    seen, received, result = {}, {}, []
     for event in events:
         if not isinstance(event, dict):
             raise ValueError("Each event must be an object.")
@@ -54,6 +55,10 @@ def calculate(payload: dict) -> dict:
             raise ValueError("Event kind must be internal, send, or receive.")
         i = indices[process]
         output = {"id": identifier, "process": process, "kind": kind}
+        if "broadcast" in event:
+            if kind != "send" or not isinstance(event["broadcast"], bool):
+                raise ValueError("Only send events may have a boolean broadcast flag.")
+            output["broadcast"] = event["broadcast"]
         incoming = None
         if kind == "receive":
             send_id = _text(event.get("send"), "Referenced send ID")
@@ -62,9 +67,12 @@ def calculate(payload: dict) -> dict:
                 raise ValueError("A receive must reference an earlier send event.")
             if sender["process"] == process:
                 raise ValueError("Messages must connect distinct processes.")
-            if send_id in received:
+            recipients = received.setdefault(send_id, set())
+            if process in recipients:
+                raise ValueError("A process can receive a broadcast only once.")
+            if recipients and not sender.get("broadcast", False):
                 raise ValueError("A send event can have only one receiver.")
-            received.add(send_id)
+            recipients.add(process)
             output["send"] = send_id
             incoming = sender["timestamp"]
         if mode == "lamport":

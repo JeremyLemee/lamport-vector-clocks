@@ -69,7 +69,10 @@ try {
   let browserOutput = "";
   browser.stderr.on("data", data => { browserOutput += data; });
   browser.on("error", error => { errors.push(String(error)); });
-  const debug = await waitFor(() => browserOutput.match(/DevTools listening on (ws:\/\/[^\s]+)/)?.[1], "Chromium startup");
+  const debug = await waitFor(() => {
+    if (browser.exitCode !== null || browser.signalCode !== null) throw new Error(`Chromium exited: ${browserOutput}`);
+    return browserOutput.match(/DevTools listening on (ws:\/\/[^\s]+)/)?.[1];
+  }, "Chromium startup");
   const debugUrl = new URL(debug);
   const targets = await (await fetch(`http://${debugUrl.host}/json/list`)).json();
   socket = new WebSocket(targets.find(target => target.type === "page").webSocketDebuggerUrl);
@@ -93,6 +96,78 @@ try {
   await idle();
   assert.equal(await evaluate('document.getElementById("mode").value'), "lamport");
   assert.equal(await evaluate('document.getElementById("send-message").disabled'), true);
+  // The shortcut fills missing names without replacing existing participants.
+  await addProcess("P1");
+  await click("quick-processes");
+  assert.deepEqual(await evaluate('state.processes.map(p => p.name)'), ["P1", "P2", "P3", "P4"]);
+  assert.equal(await evaluate('document.getElementById("quick-processes").disabled'), true);
+  await click("undo");
+  assert.match(await value("stats"), /^1 processes/);
+  await click("quick-processes");
+  await select("mode", "vector");
+  await click("broadcast-message");
+  assert.match(await value("error"), /Choose at least one/);
+  await evaluate(`(() => {
+    document.querySelector('#broadcast-processes input').checked = true;
+    document.getElementById('delay-min').value = '5';
+    document.getElementById('delay-max').value = '1';
+  })()`);
+  await click("broadcast-message");
+  assert.match(await value("error"), /minimum ≤ maximum/);
+  assert.match(await value("stats"), /0 events/);
+  await evaluate(`(() => {
+    document.querySelectorAll('#broadcast-processes input').forEach((input, i) => input.checked = i < 2);
+    document.getElementById('delay-min').value = '0.2';
+    document.getElementById('delay-max').value = '1.2';
+    const original = Math.random;
+    const samples = [0, .2, .4, .6, .8, .99];
+    Math.random = () => samples.shift();
+    document.getElementById('broadcast-message').click();
+    Math.random = original;
+  })()`);
+  await waitFor(() => evaluate('state.events.length === 2 && state.pending.length === 6'), "all broadcast sends before any receive");
+  assert.deepEqual(await evaluate('computed.events.map(e => e.timestamp)'), [[1, 0, 0, 0], [0, 1, 0, 0]]);
+  const delays = await evaluate('state.pending.map(e => e.delaySeconds)');
+  assert.equal(new Set(delays).size, 6, "Every recipient has an independent delay");
+  assert.ok(delays.every(d => d >= .2 && d <= 1.2));
+  assert.equal(await evaluate('new Set([...document.querySelectorAll("#timeline g[data-event] circle")].map(c => c.getAttribute("cx"))).size'), 1, "Simultaneous sends align on the diagram");
+  await idle();
+  assert.match(await value("stats"), /^4 processes · 8 events · 6 messages$/);
+  assert.deepEqual(await evaluate('computed.events.map(e => e.timestamp)'), [[1,0,0,0], [0,1,0,0], [1,2,0,0], [1,0,1,0], [1,0,0,1], [2,1,0,0], [1,1,2,0], [1,1,0,2]]);
+  assert.equal(await evaluate('document.querySelectorAll(".message-line").length'), 6);
+  assert.match(await value("event-rows"), /0\.20s/);
+  await click("undo");
+  assert.match(await value("stats"), /^4 processes · 0 events/);
+  // Reset cancels pending deliveries, including callbacks already scheduled.
+  await evaluate(`document.getElementById('broadcast-message').click()`);
+  await waitFor(() => evaluate('state.pending.length === 6 && !busy'), "pending broadcast");
+  await click("reset");
+  await delay(1300);
+  assert.match(await value("stats"), /^0 processes · 0 events/);
+  // A refresh resumes the original sampled delays rather than losing receives.
+  await click("quick-processes");
+  await evaluate(`(() => {
+    document.querySelector('#broadcast-processes input').checked = true;
+    document.getElementById('delay-min').value = '1';
+    document.getElementById('delay-max').value = '1';
+    document.getElementById('broadcast-message').click();
+  })()`);
+  await waitFor(() => evaluate('state.pending.length === 3 && !busy'), "persisted in-flight broadcast");
+  await command("Page.reload");
+  await waitFor(() => evaluate('document.getElementById("status")?.textContent.includes("Restored")'), "broadcast restoration");
+  await idle();
+  assert.match(await value("stats"), /^4 processes · 4 events · 3 messages$/);
+  // Capacity must include future receives, not only the initial send.
+  await evaluate(`change(next => {
+    next.events = Array.from({length:497}, (_, i) => ({id:'capacity-'+i, process:next.processes[0].id, kind:'internal'}));
+  })`);
+  await idle();
+  await evaluate(`document.querySelector('#broadcast-processes input').checked = true`);
+  await click("broadcast-message");
+  assert.match(await value("error"), /500-event limit/);
+  assert.match(await value("stats"), /497 events/);
+  await click("reset");
+  await select("mode", "lamport");
   await addProcess("P1");
   await addProcess("P2");
   assert.match(await value("stats"), /^2 processes/);
@@ -160,11 +235,11 @@ try {
   const expectedBadRequests = errors.filter(error => typeof error === "string" && error === "Failed to load resource: the server responded with a status of 400 (Bad Request)");
   assert.equal(expectedBadRequests.length, 2, "Only the duplicate name and corrupt saved execution should return 400");
   assert.deepEqual(errors.filter(error => !expectedBadRequests.includes(error)), [], "No unexpected browser runtime or console errors");
-  console.log("Browser smoke passed: editing, clocks, toggle, messages, undo/reset, persistence, validation, safe names, vectors and mobile layout.");
+  console.log("Browser smoke passed: quick processes, concurrent broadcasts, independent delays, cancellation, resumed deliveries, event limits, editing, clocks, persistence and mobile layout.");
 } finally {
   socket?.close();
   browser?.kill();
   server.kill();
-  if (browser) await new Promise(resolve => browser.exitCode !== null ? resolve() : browser.once("exit", resolve));
+  if (browser) await new Promise(resolve => browser.exitCode !== null || browser.signalCode !== null ? resolve() : browser.once("exit", resolve));
   rmSync(profile, {recursive: true, force: true});
 }

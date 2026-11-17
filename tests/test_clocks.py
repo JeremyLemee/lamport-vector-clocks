@@ -41,6 +41,30 @@ class ClockTests(unittest.TestCase):
     def test_default_mode_and_empty_execution(self):
         self.assertEqual(calculate({"processes": [], "events": []}), {"mode": "lamport", "processes": [], "events": []})
 
+    def test_concurrent_broadcasts_share_one_timestamp_per_sender(self):
+        for mode in ("lamport", "vector", "modified"):
+            with self.subTest(mode=mode):
+                payload = execution(mode)
+                payload["events"] = [
+                    {"id": "a", "process": "a", "kind": "send", "broadcast": True},
+                    {"id": "b", "process": "b", "kind": "send", "broadcast": True},
+                    {"id": "bc", "process": "c", "kind": "receive", "send": "b"},
+                    {"id": "ac", "process": "c", "kind": "receive", "send": "a"},
+                    {"id": "ab", "process": "b", "kind": "receive", "send": "a"},
+                    {"id": "ba", "process": "a", "kind": "receive", "send": "b"},
+                ]
+                events = calculate(payload)["events"]
+                expected = {
+                    "lamport": [1, 1, 2, 3, 2, 2],
+                    "vector": [[1, 0, 0], [0, 1, 0], [0, 1, 1], [1, 1, 2], [1, 2, 0], [2, 1, 0]],
+                    "modified": [[1, 0, 0], [0, 1, 0], [0, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0]],
+                }
+                self.assertEqual([e["timestamp"] for e in events], expected[mode])
+                self.assertTrue(events[0]["broadcast"])
+                payload["events"].append({"id": "again", "process": "c", "kind": "receive", "send": "a"})
+                with self.assertRaises(ValueError):
+                    calculate(payload)
+
     def test_new_process_extends_existing_vectors_with_zero(self):
         payload = execution("vector")
         payload["processes"].append({"id": "d", "name": "P4"})
@@ -60,6 +84,8 @@ class ClockTests(unittest.TestCase):
             lambda p: p["processes"][0].update(name=" "),
             lambda p: p["events"][0].update(process="unknown"),
             lambda p: p["events"][0].update(kind="unknown"),
+            lambda p: p["events"][0].update(broadcast=True),
+            lambda p: p["events"][1].update(broadcast="true"),
             lambda p: p["events"][2].update(send="missing"),
             lambda p: p["events"][2].update(send="s3"),
             lambda p: p["events"][2].update(send="e1"),

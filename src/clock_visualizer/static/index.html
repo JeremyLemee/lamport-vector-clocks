@@ -26,10 +26,12 @@
 
     <div class="workspace">
       <aside class="editor" aria-label="Execution editor">
-        <div class="panel-title"><h2>Build your execution</h2><span>01—03</span></div>
+        <div class="panel-title"><h2>Build your execution</h2><span>01—04</span></div>
         <form id="process-form" class="control-section">
           <p class="step">01 / PROCESS</p><h3>Add a participant</h3>
           <label for="process-name">Process name</label><div class="input-action"><input id="process-name" maxlength="32" placeholder="e.g. P1" required autocomplete="off"><button id="add-process" type="submit" aria-label="Add process">+</button></div>
+          <button id="quick-processes" type="button" class="secondary full quick-processes">Create P1–P4 <span>+</span></button>
+          <p class="hint">Adds any missing P1, P2, P3 and P4 without replacing your work.</p>
           <p class="hint">Up to 16 processes. Vector order follows creation order.</p>
         </form>
         <form id="internal-form" class="control-section">
@@ -44,6 +46,17 @@
           <label for="message-to">To</label><select id="message-to"></select>
           <button id="send-message" type="submit" class="primary full">Send message <span>↗</span></button>
           <p class="hint">Adds a send and a receive together. Delivery is immediate.</p>
+        </form>
+        <form id="broadcast-form" class="control-section">
+          <p class="step">04 / BROADCAST</p><h3>Send to every other process</h3>
+          <fieldset id="broadcast-senders"><legend>Choose senders</legend><div id="broadcast-processes" class="sender-list"></div></fieldset>
+          <div class="delay-inputs">
+            <div><label for="delay-min">Min delay (s)</label><input id="delay-min" type="number" min="0.01" max="3600" step="0.01" value="1" required></div>
+            <div><label for="delay-max">Max delay (s)</label><input id="delay-max" type="number" min="0.01" max="3600" step="0.01" value="5" required></div>
+          </div>
+          <button id="broadcast-message" type="submit" class="primary full">Broadcast together <span>↗</span></button>
+          <p class="hint">Selected senders start together. Every recipient gets an independent random delay within your interval. One send event per sender.</p>
+          <p id="broadcast-status" class="hint" role="status" aria-live="polite"></p>
         </form>
       </aside>
 

@@ -20,15 +20,18 @@ uv run python -m clock_visualizer
 ## Use
 
 - Add named processes; their creation order defines vector component order.
+- **Create P1–P4** adds any missing processes with those names in one click, preserving your existing work.
 - Add internal events to a selected process. Uncheck **Allow internal events** to disable new internal events; existing events still affect clocks.
 - Select distinct source and destination processes and send a message. This adds a send and its receive together with immediate delivery.
+- For a **broadcast**, select one or more senders and choose minimum and maximum delivery delays (default 1–5 seconds; customizable from 0.01 to 3600 seconds). **Broadcast together** creates one send event per selected sender at the same start time. Each sends to every other process with an independently sampled uniform random delay. Receives appear live in delivery order; arrows and ledger entries show the sampled delays. These physical delays do not advance logical clocks by seconds.
+- While broadcasts are in flight, editing pauses. **Undo** removes the entire broadcast batch and **Reset** clears the workspace, canceling pending deliveries. Refreshing resumes saved deliveries with their original deadlines. The server must remain available for deliveries to appear; delayed browser timers may display them late, but their sampled order is preserved.
 - Switch the clock model to relabel the same execution. Lamport is the default for new workspaces.
 - **Load example** demonstrates a three-process execution. **Undo** reverses the latest change (including messages, settings, example loading, and reset). The most recent 100 actions are available until refresh.
 - **Reset** clears the execution and processes; it preserves clock mode and the internal-event setting.
 - The workspace is saved in this browser automatically. Refresh restores it; browser tabs hold independent live editors, and the most recently saved tab supplies the next restored session. Undo history is not saved.
 - Scroll wide diagrams horizontally, or expand the event ledger for accessible tabular timestamps. Event names e1, e2, … follow construction order. Only local lane order and message arrows imply causality; horizontal alignment across processes does not.
 
-This version supports up to 16 processes and 500 events. Editing is append-only with undo/reset. Delayed deliveries, inserting events into existing timelines, and moving events are outside its scope. Loading the example replaces the execution with its bundled events even when internal-event creation is disabled.
+This version supports up to 16 processes and 500 events, including reserved pending broadcast receives. Editing is append-only with undo/reset. Inserting events into existing timelines and moving events are outside its scope. Loading the example replaces the execution with its bundled events even when internal-event creation is disabled.
 
 ## Clock rules
 
@@ -62,4 +65,4 @@ CHROMIUM_EXECUTABLE=/path/to/chromium node tests/browser_smoke.mjs
 
 It starts a temporary local server and browser profile, exercises editing, mode switching, messages, the internal-event toggle, undo/reset, saved-session restoration, invalid saved data, safe rendering of names, long vectors and mobile layout, then closes both processes. Set `SCREENSHOT_PATH=/tmp/clocks.png` to save a screenshot.
 
-The server is intended for local educational use and binds to loopback by default. `POST /api/calculate` accepts `{mode, processes: [{id, name}], events: [{id, process, kind, send?}]}` and returns normalized processes and event timestamps. Receive references must point to earlier sends on distinct processes; each send supports one receiver. Errors return JSON with an `error` string. Requests are limited to 256 KiB.
+The server is intended for local educational use and binds to loopback by default. `POST /api/calculate` accepts `{mode, processes: [{id, name}], events: [{id, process, kind, send?, broadcast?}]}` and returns normalized processes and event timestamps. Receive references must point to earlier sends on distinct processes; ordinary sends support one receiver, while sends with `broadcast: true` support one receive per other process. Errors return JSON with an `error` string. Requests are limited to 256 KiB.
