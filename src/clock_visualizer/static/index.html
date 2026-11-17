@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Logical clocks · Distributed systems lab</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <main>
+    <header class="page-header">
+      <div><p class="eyebrow">DISTRIBUTED SYSTEMS / INTERACTIVE LAB</p><h1>Every event tells time<span>.</span></h1><p class="intro">Build an execution. Follow its messages. Explore what a clock can tell you.</p></div>
+      <div class="local-badge"><span></span> Local workspace</div>
+    </header>
+
+    <section class="mode-bar" aria-label="Clock settings">
+      <div><label for="mode">Clock model</label><select id="mode"><option value="lamport">Lamport clocks</option><option value="vector">Vector clocks</option><option value="modified">Modified vector clocks</option></select></div>
+      <p id="mode-summary">A scalar clock that respects causal order.</p>
+      <label class="toggle"><input type="checkbox" id="allow-internal" checked> Allow internal events</label>
+    </section>
+
+    <div id="error" class="notice error" role="alert" hidden></div>
+    <div id="storage-warning" class="notice" role="status" hidden></div>
+
+    <div class="workspace">
+      <aside class="editor" aria-label="Execution editor">
+        <div class="panel-title"><h2>Build your execution</h2><span>01—03</span></div>
+        <form id="process-form" class="control-section">
+          <p class="step">01 / PROCESS</p><h3>Add a participant</h3>
+          <label for="process-name">Process name</label><div class="input-action"><input id="process-name" maxlength="32" placeholder="e.g. P1" required autocomplete="off"><button id="add-process" type="submit" aria-label="Add process">+</button></div>
+          <p class="hint">Up to 16 processes. Vector order follows creation order.</p>
+        </form>
+        <form id="internal-form" class="control-section">
+          <p class="step">02 / INTERNAL EVENT</p><h3>Advance a local clock</h3>
+          <label for="internal-process">On process</label><select id="internal-process"></select>
+          <button id="add-internal" type="submit" class="secondary full">Add internal event <span>+</span></button>
+          <p id="internal-hint" class="hint">An event visible only to its own process.</p>
+        </form>
+        <form id="message-form" class="control-section">
+          <p class="step">03 / MESSAGE</p><h3>Connect two processes</h3>
+          <label for="message-from">From</label><select id="message-from"></select>
+          <label for="message-to">To</label><select id="message-to"></select>
+          <button id="send-message" type="submit" class="primary full">Send message <span>↗</span></button>
+          <p class="hint">Adds a send and a receive together. Delivery is immediate.</p>
+        </form>
+      </aside>
+
+      <section class="visual-panel" aria-labelledby="timeline-heading">
+        <div class="diagram-toolbar"><div><p class="step">EXECUTION TIMELINE</p><h2 id="timeline-heading">Lamport clocks</h2></div><div class="actions"><button id="example" class="secondary">Load example</button><button id="undo" class="quiet">Undo</button><button id="reset" class="quiet danger">Reset</button></div></div>
+        <div class="diagram-meta"><span id="stats" aria-live="polite">0 processes · 0 events · 0 messages</span><span>local order →</span></div>
+        <div class="diagram-scroll" tabindex="0" role="region" aria-label="Scrollable execution timeline"><div id="empty" class="empty"><div class="empty-icon">↗</div><h3>A blank page in distributed time.</h3><p>Add a process to get started, or load the example to see clocks in motion.</p></div><svg id="timeline" role="img" aria-labelledby="svg-title svg-description" hidden></svg></div>
+        <div class="legend"><span><i class="dot internal"></i> Internal</span><span><i class="dot send"></i> Send</span><span><i class="dot receive"></i> Receive</span><span class="legend-note">Position across lanes does not imply causality.</span></div>
+        <div class="rules"><p class="step">HOW THIS CLOCK WORKS</p><h3 id="rule-title">One counter per process.</h3><p id="rule-body"></p><p id="vector-order" class="hint"></p><p id="modified-note" class="modified-note" hidden>Receives do not increment a component. Timestamps can be equal for distinct, causally related events; strict vector comparison cannot recover every causal relation in this mode.</p></div>
+      </section>
+    </div>
+
+    <details class="event-details"><summary>Event ledger <span id="ledger-count">0 events</span></summary><div class="table-scroll"><table><caption class="sr-only">Event timestamps in construction order</caption><thead><tr><th scope="col">Event</th><th scope="col">Process</th><th scope="col">Type</th><th scope="col">Message</th><th scope="col">Timestamp</th></tr></thead><tbody id="event-rows"></tbody></table></div></details>
+    <footer><span>Logical clocks / an experiment in causality</span><span id="status" role="status">Starting…</span></footer>
+  </main>
+</body>
+</html>
