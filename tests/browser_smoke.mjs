@@ -96,6 +96,7 @@ try {
   await command("Page.navigate", {url});
   await idle();
   assert.equal(await evaluate('document.getElementById("mode").value'), "lamport");
+  assert.deepEqual(await evaluate('[...document.getElementById("mode").options].map(option => option.value)'), ["lamport", "vector", "causal"]);
   assert.equal(await evaluate('document.querySelector(".buffering-controls").hidden'), true);
   assert.equal(await evaluate('document.getElementById("send-message").disabled'), true);
   // The shortcut fills missing names without replacing existing participants.
@@ -197,15 +198,16 @@ try {
   assert.equal(await evaluate('document.querySelector(".buffering-controls").hidden'), false);
   await click("highlight-buffering");
   assert.deepEqual(await evaluate('[...document.querySelectorAll("#event-rows .needs-buffering")].map(row => row.cells[1].textContent)'), ["P2"]);
-  assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /Message vector \[1, 0, 1, 0\].*Delivered vector \[0, 0, 0, 0\]/);
+  assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /Message vector \[1, 0, 1, 0\].*Receiver vector \[0, 0, 0, 0\]/);
   assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /P1 \(dependency\): 1 > 0 delivered/);
+  assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /Missing 1 message from P1/);
   assert.equal(await evaluate('document.querySelector("#event-rows .needs-buffering td:last-child").textContent'), "[0, 0, 0, 0]");
   await click("question-mode");
   await evaluate('document.querySelector("#event-rows .needs-buffering button").click()');
   assert.match(await value("deduction-result"), /P1 \(dependency\): 1 > 0 delivered/);
   await click("question-mode");
   assert.equal(await evaluate('document.querySelectorAll("#timeline g.needs-buffering").length'), 1);
-  for (const mode of ["lamport", "vector", "modified"]) {
+  for (const mode of ["lamport", "vector"]) {
     await select("mode", mode);
     assert.equal(await evaluate('document.querySelector(".buffering-controls").hidden'), true);
     assert.equal(await evaluate('document.querySelectorAll(".needs-buffering").length'), 0);
@@ -218,18 +220,18 @@ try {
       {id: 'internal', kind: 'internal', process: sender},
       {id: 'unicast', kind: 'send', process: sender},
       {id: 'unicast-receive', kind: 'receive', process: other, send: 'unicast'},
-      {id: 'first', kind: 'send', process: sender},
-      {id: 'second', kind: 'send', process: sender},
+      {id: 'first', kind: 'send', process: sender, broadcast: true},
+      {id: 'second', kind: 'send', process: sender, broadcast: true},
       {id: 'second-receive', kind: 'receive', process: receiver, send: 'second'},
       {id: 'first-receive', kind: 'receive', process: receiver, send: 'first'},
-      {id: 'third', kind: 'send', process: sender},
+      {id: 'third', kind: 'send', process: sender, broadcast: true},
       {id: 'third-receive', kind: 'receive', process: receiver, send: 'third'}
     ];
   })`);
   await idle();
   await click("highlight-buffering");
   assert.deepEqual(await evaluate('[...document.querySelectorAll("#timeline g.needs-buffering")].map(group => group.dataset.event)'), ["second-receive"]);
-  assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /waiting for e4.*Message vector \[2, 0, 0, 0\].*Delivered vector \[0, 0, 0, 0\]/);
+  assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /waiting for e4.*Message vector \[2, 0, 0, 0\].*Receiver vector \[0, 0, 0, 0\]/);
   assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /P1 \(sender\): sequence 2, expected 1/);
   assert.equal(await lastStamp(), "[3, 0, 0, 0]");
   await click("highlight-buffering");
@@ -258,27 +260,30 @@ try {
   assert.equal(await evaluate('document.querySelectorAll(".message-line").length'), 1);
   await select("mode", "vector");
   assert.equal(await lastStamp(), "[2, 1]");
-  await select("mode", "modified");
-  assert.equal(await lastStamp(), "[2, 0]");
+  await select("mode", "causal");
+  assert.equal(await lastStamp(), "[0, 0]");
   await addProcess("P3");
-  assert.equal(await lastStamp(), "[2, 0, 0]");
+  assert.equal(await lastStamp(), "[0, 0, 0]");
   await click("undo");
-  assert.equal(await lastStamp(), "[2, 0]");
+  assert.equal(await lastStamp(), "[0, 0]");
   await addProcess("P1");
   assert.equal(await evaluate('document.getElementById("error").hidden'), false);
   assert.match(await value("stats"), /^2 processes/);
   await addProcess("<img src=x onerror=alert(1)>");
   assert.equal(await evaluate('document.querySelectorAll("img").length'), 0, "Process names must render as text");
+  await evaluate(`localStorage.setItem("logical-clock-workspace-v1", JSON.stringify({...state, mode:"modified"}))`);
   await command("Page.reload");
   await waitFor(() => evaluate('document.getElementById("status")?.textContent.includes("Restored")'), "saved workspace restoration");
-  assert.equal(await lastStamp(), "[2, 0, 0]");
+  assert.equal(await lastStamp(), "[0, 0, 0]");
+  assert.equal(await evaluate('document.getElementById("mode").value'), "causal");
   assert.equal(await evaluate('document.getElementById("allow-internal").checked'), false);
   await click("reset");
   assert.match(await value("stats"), /^0 processes · 0 events/);
   await click("undo");
   assert.match(await value("stats"), /^3 processes · 3 events/);
+  await select("mode", "vector");
   await click("example");
-  assert.equal(await lastStamp(), "[2, 1, 2]");
+  assert.equal(await lastStamp(), "[3, 3, 2]");
   assert.equal(await evaluate('document.querySelectorAll(".message-line").length'), 3);
   // Long labels and narrow screens must scroll rather than overflow the page.
   for (let i = 4; i <= 16; i++) await addProcess(`P${i}`);
@@ -322,15 +327,19 @@ try {
   await click("send-message");
   assert.equal(await lastStamp(), "?", "New events start hidden in question mode");
   await click("undo");
-  for (const [mode, stamp, rule] of [["vector", "[3, 3, 2]", /increment/i], ["modified", "[2, 1, 2]", /componentwise/i]]) {
-    await select("mode", mode);
-    assert.equal(await lastStamp(), "?");
-    assert.equal(await evaluate('document.getElementById("deduction").hidden'), true);
-    await evaluate('document.querySelector(".event-details").open = true');
-    await evaluate('document.querySelector("#event-rows tr:last-child button").click()');
-    assert.equal(await evaluate('document.querySelector("[data-event=h] .event-label").textContent'), stamp);
-    assert.match(await value("deduction-result"), rule);
-  }
+  await select("mode", "vector");
+  assert.equal(await lastStamp(), "?");
+  assert.equal(await evaluate('document.getElementById("deduction").hidden'), true);
+  await evaluate('document.querySelector(".event-details").open = true');
+  await evaluate('document.querySelector("#event-rows tr:last-child button").click()');
+  assert.equal(await evaluate('document.querySelector("[data-event=h] .event-label").textContent'), "[3, 3, 2]");
+  assert.match(await value("deduction-result"), /increment/i);
+  await select("mode", "causal");
+  await click("example");
+  await click("highlight-buffering");
+  assert.equal(await evaluate('document.querySelector("#timeline .needs-buffering[data-event]").dataset.event'), "john-early");
+  await evaluate('document.querySelector("#event-rows tr:last-child button").click()');
+  assert.match(await value("deduction-result"), /Released 1 buffered message/);
   await command("Page.reload");
   await waitFor(() => evaluate('document.getElementById("status")?.textContent.includes("Restored")'), "question mode restoration");
   assert.equal(await lastStamp(), "?");
@@ -338,7 +347,7 @@ try {
   await click("example");
   assert.equal(await lastStamp(), "?");
   await click("question-mode");
-  assert.equal(await lastStamp(), "[2, 1, 2]");
+  assert.equal(await lastStamp(), "[1, 1, 0]");
   if (process.env.SCREENSHOT_PATH) {
     const screenshot = await command("Page.captureScreenshot", {format: "png"});
     writeFileSync(process.env.SCREENSHOT_PATH, Buffer.from(screenshot.data, "base64"));

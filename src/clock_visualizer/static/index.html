@@ -16,7 +16,7 @@
     </header>
 
     <section class="mode-bar" aria-label="Clock settings">
-      <div><label for="mode">Clock model</label><select id="mode"><option value="lamport">Lamport clocks</option><option value="vector">Vector clocks</option><option value="modified">Modified vector clocks</option><option value="causal">Vector clocks for causal ordering</option></select></div>
+      <div><label for="mode">Clock model</label><select id="mode"><option value="lamport">Lamport clocks</option><option value="vector">Vector clocks</option><option value="causal">Vector clocks for causal ordering</option></select></div>
       <p id="mode-summary">A scalar clock that respects causal order.</p>
       <label class="toggle"><input type="checkbox" id="allow-internal" checked> Allow internal events</label>
       <label class="toggle"><input type="checkbox" id="question-mode"> Question mode</label>
@@ -85,7 +85,7 @@
           </dl>
         </section>
         <div class="legend"><span><i class="dot internal"></i> Internal</span><span><i class="dot send"></i> Send</span><span><i class="dot receive"></i> Receive</span><span class="legend-note">Position across lanes does not imply causality.</span></div>
-        <div class="rules"><p class="step">HOW THIS CLOCK WORKS</p><h3 id="rule-title">One counter per process.</h3><p id="rule-body"></p><p id="vector-order" class="hint"></p><p id="modified-note" class="modified-note" hidden>Receives do not increment a component. Timestamps can be equal for distinct, causally related events; strict vector comparison cannot recover every causal relation in this mode.</p></div>
+        <div class="rules"><p class="step">HOW THIS CLOCK WORKS</p><h3 id="rule-title">One counter per process.</h3><p id="rule-body"></p><p id="vector-order" class="hint"></p></div>
       </section>
     </div>
 

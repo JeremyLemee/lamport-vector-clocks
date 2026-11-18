@@ -29,7 +29,7 @@ uv run python -m clock_visualizer
 - Select distinct source and destination processes and send a message. This adds a send and its receive together with immediate delivery.
 - For a **broadcast**, select one or more senders and choose minimum and maximum delivery delays (default 1–5 seconds; customizable from 0.01 to 3600 seconds). **Broadcast together** creates one send event per selected sender at the same start time. Each sends to every other process with an independently sampled uniform random delay. Receives appear live in delivery order; arrows and ledger entries show the sampled delays. These physical delays do not advance logical clocks by seconds.
 - With **First recipient replies** enabled, the first process to receive each broadcast sends one reply to the original sender and the other recipients. The reply is local to its own sender and uses the same network delay range for the other processes. Set **Wait before replying** from 0 to 2 seconds. The default is 0 seconds, and ties follow process creation order.
-- Select **Vector clocks for causal ordering** to see each process’s delivered-message vector and enable **Highlight buffering**. A message from process `s` can be delivered when its component for `s` equals the receiver’s delivered count plus one, and every other component is at most the corresponding delivered count. These counters track messages addressed to the receiver so a unicast creates no gap for other processes. Simulated delivery releases eligible buffered messages and advances the counters. The timeline preserves network arrival order. Each marked arrival lists the failed component checks, the two vectors, and the missing sends in the ledger and timeline tooltip. See [Birman, Schiper, and Stephenson’s CBCAST protocol, §5.1](https://cse.iitkgp.ac.in/~agupta/distsys/LogicalTime-BirmanSchieperStephenson.pdf).
+- Select **Vector clocks for causal ordering** to replay the causal broadcast algorithm in `07-DS-Time.pdf`, slides 40–42. **Load example** shows the lecture’s scenario in which P3 receives P2’s reply before P1’s broadcast. **Highlight buffering** marks messages that wait, with both vectors, the failed comparisons, and the missing broadcasts in the ledger and timeline tooltip.
 - While broadcasts are in flight, editing pauses. **Undo** removes the entire broadcast batch and **Reset** clears the workspace, canceling pending deliveries. Refreshing resumes saved deliveries with their original deadlines. The server must remain available for deliveries to appear; delayed browser timers may display them late, but their sampled order is preserved.
 - Switch the clock model to relabel the same execution. Lamport is the default for new workspaces.
 - Turn on **Question mode** to replace event timestamps with `?`. Select a timestamp in the timeline or event ledger to reveal it and see the previous local clock, any incoming message timestamp, and the calculation. The setting is saved in the browser. Refreshing starts the questions over.
@@ -42,15 +42,16 @@ This version supports up to 16 processes and 500 events, including reserved repl
 
 ## Clock rules
 
-All clocks start at zero. Each label is the clock **after** that event. In the three event-clock models below, sends carry their event's timestamp. The causal-ordering view displays delivered-message counts and uses destination-specific message vectors for its buffering check.
+All clocks start at zero. Each label is the clock **after** that event. In the event-clock models below, sends carry their event’s timestamp.
 
 | Model | Internal or send on Pi | Receive on Pi, with timestamp t |
 | --- | --- | --- |
 | Lamport (default) | `L = L + 1` | `L = max(L, t) + 1` |
 | Vector | `V[i] = V[i] + 1` | Componentwise `V[j] = max(V[j], t[j])`, then `V[i] += 1` |
-| Modified vector | `V[i] = V[i] + 1` | Componentwise `V[j] = max(V[j], t[j])`; **no increment** |
 
-Standard vector clocks distinguish concurrent events: neither vector is componentwise less than or equal to the other. Modified vector clocks follow the supplied rule exactly, so a receive can share a timestamp with its sender or a preceding local event. Strict vector comparison therefore does not recover every happened-before relation in that mode. Timestamps are not event identifiers.
+Standard vector clocks distinguish concurrent events when neither vector is componentwise less than or equal to the other.
+
+For causal ordering, each process keeps one vector `V` and an initially empty buffer. Before broadcasting, process `i` increments `V[i]` and attaches the full vector to the message. When a broadcast from `i` arrives with timestamp `T`, the receiver adds it to the buffer. It repeatedly delivers any buffered message with `T[i] = V[i] + 1` and `T[k] ≤ V[k]` for every `k ≠ i`. Each delivery merges the message into the local clock using componentwise max. The model assumes reliable delivery to a fixed group. Internal events and point-to-point messages leave the causal clock unchanged. The timeline retains arrival order and shows the clock after any messages released by that arrival.
 
 Adding another process recomputes vectors with an additional zero component for earlier events.
 

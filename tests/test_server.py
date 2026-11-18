@@ -29,10 +29,10 @@ class ServerTests(unittest.TestCase):
         return result
 
     def test_calculate_and_bad_payloads(self):
-        status, content_type, body = self.request("POST", "/api/calculate", json.dumps(execution("modified")))
+        status, content_type, body = self.request("POST", "/api/calculate", json.dumps(execution("causal")))
         self.assertEqual(status, 200)
         self.assertIn("application/json", content_type)
-        self.assertEqual(json.loads(body)["events"][-1]["timestamp"], [2, 1, 1])
+        self.assertEqual(json.loads(body)["events"][-1]["timestamp"], [0, 0, 0])
         for payload in ["broken", "null", "{}", '{"mode": [], "processes": [], "events": []}']:
             with self.subTest(payload=payload):
                 status, _, body = self.request("POST", "/api/calculate", payload)

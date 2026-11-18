@@ -1,6 +1,6 @@
 """Validation and timestamp computation, independent of the HTTP transport."""
 
-MODES = {"lamport", "vector", "modified"}
+MODES = {"lamport", "vector", "causal"}
 MAX_PROCESSES = 16
 MAX_EVENTS = 500
 
@@ -9,6 +9,43 @@ def _text(value, label, limit=80):
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise ValueError(f"{label} must be nonempty text of at most {limit} characters.")
     return value.strip()
+
+
+def _merge(local, incoming):
+    return [max(a, b) for a, b in zip(local, incoming)]
+
+
+def _delivery_gaps(sender, vector, local):
+    return [
+        i for i, (count, delivered) in enumerate(zip(vector, local))
+        if (count != delivered + 1 if i == sender else count > delivered)
+    ]
+
+
+def _receive_broadcast(clock, queue, sender, vector, broadcasts):
+    failures = [
+        {
+            "source": i, "isSender": i == sender, "count": vector[i], "deliveredCount": clock[i],
+            "blockers": broadcasts[i][clock[i]:vector[i] - (i == sender)],
+        }
+        for i in _delivery_gaps(sender, vector, clock)
+    ]
+    details = {"vector": vector, "delivered": clock.copy(), "failures": failures, "released": 0}
+    queue.append((sender, vector))
+    while True:
+        ready = next(
+            (i for i, (source, stamp) in enumerate(queue) if not _delivery_gaps(source, stamp, clock)),
+            None,
+        )
+        if ready is None:
+            break
+        _, stamp = queue.pop(ready)
+        clock[:] = _merge(clock, stamp)
+        details["released"] += 1
+    # Count previously buffered messages released by this arrival.
+    if not failures:
+        details["released"] -= 1
+    return details
 
 
 def calculate(payload: dict) -> dict:
@@ -22,7 +59,7 @@ def calculate(payload: dict) -> dict:
         raise ValueError("The execution must be a JSON object.")
     mode = payload.get("mode", "lamport")
     if not isinstance(mode, str) or mode not in MODES:
-        raise ValueError("Choose lamport, vector, or modified clocks.")
+        raise ValueError("Choose lamport, vector, or causal clocks.")
     processes, events = payload.get("processes"), payload.get("events")
     if not isinstance(processes, list) or len(processes) > MAX_PROCESSES:
         raise ValueError(f"Provide a list of at most {MAX_PROCESSES} processes.")
@@ -40,6 +77,8 @@ def calculate(payload: dict) -> dict:
         names.add(name)
         normalized.append({"id": identifier, "name": name})
     clocks = [0 if mode == "lamport" else [0] * len(indices) for _ in indices]
+    queues = [[] for _ in indices]
+    broadcasts = [[] for _ in indices]
     seen, received, result = {}, {}, []
     for event in events:
         if not isinstance(event, dict):
@@ -78,11 +117,19 @@ def calculate(payload: dict) -> dict:
         if mode == "lamport":
             clocks[i] = max(clocks[i], incoming or 0) + 1
             output["timestamp"] = clocks[i]
-        else:
+        elif mode == "vector":
             if incoming is not None:
-                clocks[i] = [max(local, remote) for local, remote in zip(clocks[i], incoming)]
-            if kind != "receive" or mode == "vector":
+                clocks[i] = _merge(clocks[i], incoming)
+            clocks[i][i] += 1
+            output["timestamp"] = clocks[i].copy()
+        else:
+            if output.get("broadcast"):
                 clocks[i][i] += 1
+                broadcasts[i].append(identifier)
+            elif kind == "receive" and sender.get("broadcast"):
+                output["delivery"] = _receive_broadcast(
+                    clocks[i], queues[i], indices[sender["process"]], incoming, broadcasts
+                )
             output["timestamp"] = clocks[i].copy()
         seen[identifier] = output
         result.append(output)

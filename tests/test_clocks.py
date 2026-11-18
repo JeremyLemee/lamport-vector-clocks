@@ -28,7 +28,7 @@ class ClockTests(unittest.TestCase):
         expected = {
             "lamport": [1, 2, 3, 1, 4, 5, 6],
             "vector": [[1, 0, 0], [2, 0, 0], [2, 1, 0], [0, 0, 1], [2, 2, 1], [2, 3, 1], [3, 3, 1]],
-            "modified": [[1, 0, 0], [2, 0, 0], [2, 0, 0], [0, 0, 1], [2, 0, 1], [2, 1, 1], [2, 1, 1]],
+            "causal": [[0, 0, 0]] * 7,
         }
         for mode, timestamps in expected.items():
             with self.subTest(mode=mode):
@@ -42,7 +42,7 @@ class ClockTests(unittest.TestCase):
         self.assertEqual(calculate({"processes": [], "events": []}), {"mode": "lamport", "processes": [], "events": []})
 
     def test_concurrent_broadcasts_share_one_timestamp_per_sender(self):
-        for mode in ("lamport", "vector", "modified"):
+        for mode in ("lamport", "vector", "causal"):
             with self.subTest(mode=mode):
                 payload = execution(mode)
                 payload["events"] = [
@@ -57,7 +57,7 @@ class ClockTests(unittest.TestCase):
                 expected = {
                     "lamport": [1, 1, 2, 3, 2, 2],
                     "vector": [[1, 0, 0], [0, 1, 0], [0, 1, 1], [1, 1, 2], [1, 2, 0], [2, 1, 0]],
-                    "modified": [[1, 0, 0], [0, 1, 0], [0, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0]],
+                    "causal": [[1, 0, 0], [0, 1, 0], [0, 1, 0], [1, 1, 0], [1, 1, 0], [1, 1, 0]],
                 }
                 self.assertEqual([e["timestamp"] for e in events], expected[mode])
                 self.assertTrue(events[0]["broadcast"])
@@ -69,6 +69,28 @@ class ClockTests(unittest.TestCase):
         payload = execution("vector")
         payload["processes"].append({"id": "d", "name": "P4"})
         self.assertEqual(calculate(payload)["events"][-1]["timestamp"], [3, 3, 1, 0])
+
+    def test_causal_broadcast_replays_slide_42(self):
+        payload = execution("causal")
+        payload["events"] = [
+            {"id": "a1", "process": "a", "kind": "send", "broadcast": True},
+            {"id": "b1", "process": "b", "kind": "receive", "send": "a1"},
+            {"id": "b2", "process": "b", "kind": "send", "broadcast": True},
+            {"id": "c1", "process": "c", "kind": "receive", "send": "b2"},
+            {"id": "c2", "process": "c", "kind": "send", "broadcast": True},
+            {"id": "a2", "process": "a", "kind": "receive", "send": "b2"},
+            {"id": "c3", "process": "c", "kind": "receive", "send": "a1"},
+        ]
+        events = calculate(payload)["events"]
+        self.assertEqual([e["timestamp"] for e in events], [
+            [1, 0, 0], [1, 0, 0], [1, 1, 0], [0, 0, 0],
+            [0, 0, 1], [1, 1, 0], [1, 1, 1],
+        ])
+        self.assertEqual(events[3]["delivery"]["vector"], [1, 1, 0])
+        self.assertEqual(events[3]["delivery"]["failures"], [
+            {"source": 0, "isSender": False, "count": 1, "deliveredCount": 0, "blockers": ["a1"]},
+        ])
+        self.assertEqual(events[-1]["delivery"]["released"], 1)
 
     def test_independent_events_have_independent_clocks(self):
         payload = execution("vector")
