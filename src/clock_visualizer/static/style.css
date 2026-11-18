@@ -23,4 +23,5 @@ svg{display:block}.lane{stroke:#cedbd3;stroke-width:1.5}.lane-label{font:600 13p
 .message-line.needs-buffering{stroke:#993f2e;stroke-width:2.4;stroke-dasharray:6 3;opacity:1}
 .buffering-ring{fill:none;stroke:#993f2e;stroke-width:2}
 tr.needs-buffering{background:#fff1ed;color:#84382b}
+.buffering-explanation{display:block;max-width:55ch;margin-top:4px;white-space:normal;line-height:1.5;overflow-wrap:anywhere}
 @media(max-width:700px){.buffering-controls{padding-inline:20px}}

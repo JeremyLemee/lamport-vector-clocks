@@ -2,6 +2,10 @@
 
 A local, interactive distributed systems lab built with Python, uv, plain JavaScript and SVG. No runtime dependencies, JavaScript build tools, or external assets.
 
+## AI Use
+
+The project was coded using Codex with GPT-6.1 Sol and GPT-6.2 Sol.
+
 ## Run
 
 Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then from this directory:
@@ -25,7 +29,7 @@ uv run python -m clock_visualizer
 - Select distinct source and destination processes and send a message. This adds a send and its receive together with immediate delivery.
 - For a **broadcast**, select one or more senders and choose minimum and maximum delivery delays (default 1–5 seconds; customizable from 0.01 to 3600 seconds). **Broadcast together** creates one send event per selected sender at the same start time. Each sends to every other process with an independently sampled uniform random delay. Receives appear live in delivery order; arrows and ledger entries show the sampled delays. These physical delays do not advance logical clocks by seconds.
 - With **First recipient replies** enabled, the first process to receive each broadcast sends one reply to the original sender and the other recipients. The reply is local to its own sender and uses the same network delay range for the other processes. Set **Wait before replying** from 0 to 2 seconds. The default is 0 seconds, and ties follow process creation order.
-- **Highlight buffering** checks each arrival against the receiver’s causal delivery vector. A message from process `s` can be delivered when its component for `s` equals the receiver’s delivered count plus one, and every other component is at most the corresponding delivered count. These counters track messages addressed to the receiver so a unicast creates no gap for other processes. Simulated delivery releases eligible buffered messages and advances the counters. The timeline and ledger show network arrival order, and the ledger shows the vectors and missing sends for each marked arrival. See [Birman, Schiper, and Stephenson’s CBCAST protocol, §5.1](https://cse.iitkgp.ac.in/~agupta/distsys/LogicalTime-BirmanSchieperStephenson.pdf).
+- Select **Vector clocks for causal ordering** to see each process’s delivered-message vector and enable **Highlight buffering**. A message from process `s` can be delivered when its component for `s` equals the receiver’s delivered count plus one, and every other component is at most the corresponding delivered count. These counters track messages addressed to the receiver so a unicast creates no gap for other processes. Simulated delivery releases eligible buffered messages and advances the counters. The timeline preserves network arrival order. Each marked arrival lists the failed component checks, the two vectors, and the missing sends in the ledger and timeline tooltip. See [Birman, Schiper, and Stephenson’s CBCAST protocol, §5.1](https://cse.iitkgp.ac.in/~agupta/distsys/LogicalTime-BirmanSchieperStephenson.pdf).
 - While broadcasts are in flight, editing pauses. **Undo** removes the entire broadcast batch and **Reset** clears the workspace, canceling pending deliveries. Refreshing resumes saved deliveries with their original deadlines. The server must remain available for deliveries to appear; delayed browser timers may display them late, but their sampled order is preserved.
 - Switch the clock model to relabel the same execution. Lamport is the default for new workspaces.
 - Turn on **Question mode** to replace event timestamps with `?`. Select a timestamp in the timeline or event ledger to reveal it and see the previous local clock, any incoming message timestamp, and the calculation. The setting is saved in the browser. Refreshing starts the questions over.
@@ -38,7 +42,7 @@ This version supports up to 16 processes and 500 events, including reserved repl
 
 ## Clock rules
 
-All clocks start at zero. Each label is the clock **after** that event. Sends carry their event's timestamp. A message action creates two events.
+All clocks start at zero. Each label is the clock **after** that event. In the three event-clock models below, sends carry their event's timestamp. The causal-ordering view displays delivered-message counts and uses destination-specific message vectors for its buffering check.
 
 | Model | Internal or send on Pi | Receive on Pi, with timestamp t |
 | --- | --- | --- |

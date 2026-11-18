@@ -7,11 +7,19 @@ const fresh = () => ({
   mode: "lamport", processes: [], events: [], allowInternal: true, questionMode: false,
   pending: [], delayMin: 1, delayMax: 5, autoReply: true, replyDelay: 0
 });
-const titles = {lamport: "Lamport clocks", vector: "Vector clocks", modified: "Modified vector clocks"};
+const titles = {
+  lamport: "Lamport clocks", vector: "Vector clocks", modified: "Modified vector clocks",
+  causal: "Vector clocks for causal ordering"
+};
 const explanations = {
   lamport: ["A scalar clock that respects causal order.", "One counter per process.", "Internal and send events: L ← L + 1. Receive a message timestamped t: L ← max(L, t) + 1. All clocks start at zero. L(a) < L(b) alone does not establish that a caused b."],
   vector: ["Track what each process knows about every other process.", "A vector of causal knowledge.", "Internal and send events on Pi: V[i] ← V[i] + 1. Receive: take the componentwise maximum with the message vector, then increment V[i]. All components start at zero."],
-  modified: ["A receive merges knowledge without advancing its own counter.", "Merge on receive. Increment otherwise.", "Internal and send events on Pi: V[i] ← V[i] + 1. Receive a message timestamped t: for every j, V[j] ← max(V[j], t[j]). No increment occurs on receive. All components start at zero."]
+  modified: ["A receive merges knowledge without advancing its own counter.", "Merge on receive. Increment otherwise.", "Internal and send events on Pi: V[i] ← V[i] + 1. Receive a message timestamped t: for every j, V[j] ← max(V[j], t[j]). No increment occurs on receive. All components start at zero."],
+  causal: [
+    "Track which messages each process can deliver in causal order.",
+    "Deliver only when the dependencies are ready.",
+    "For a message with vector M from process s and a receiver with delivered vector D, require M[s] = D[s] + 1 and M[i] ≤ D[i] for every other process. Labels show each process’s delivered vector after the event, including any buffered messages released at that point."
+  ]
 };
 let state = fresh();
 let computed = {events: []};
@@ -19,7 +27,7 @@ let history = [];
 let busy = true;
 let deliveryTimer;
 let highlightBuffering = false;
-let buffering = new Map();
+let causalEvents = new Map();
 const revealed = new Set();
 let selectedAnswer = null;
 const pendingDeliveries = () => state.pending || [];
@@ -42,12 +50,15 @@ function save() {
 }
 
 async function calculate(next) {
+  // The server validates the event trace. The causal view also uses pending routes.
+  const causal = next.mode === "causal";
+  const payload = causal ? {...next, mode: "vector"} : next;
   const response = await fetch("/api/calculate", {
-    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(next)
+    method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload)
   });
   const result = await response.json();
   if (!response.ok) throw new Error(result.error || "Unable to calculate clocks.");
-  return result;
+  return causal ? {...result, mode: "causal"} : result;
 }
 
 async function change(edit, {undo = false, recordHistory = true, resetAnswers = false} = {}) {
@@ -167,23 +178,27 @@ function renderControls() {
   $("auto-reply").checked = state.autoReply;
   $("reply-delay").disabled = $("auto-reply").disabled || !state.autoReply;
   $("broadcast-status").textContent = inFlight ? "Messages in flight. Undo or reset cancels pending events." : "No messages in flight.";
-  $("highlight-buffering").disabled = !computed.events.some(event => event.kind === "receive");
+  $("buffering-controls").hidden = state.mode !== "causal";
+  $("highlight-buffering").disabled = state.mode !== "causal" || !computed.events.some(event => event.kind === "receive");
   $("undo").disabled = busy || !history.length;
   $("reset").disabled = busy || (!state.processes.length && !state.events.length);
   $("example").disabled = busy;
 }
 
 const timestamp = value => Array.isArray(value) ? `[${value.join(", ")}]` : String(value);
-const displayedTimestamp = event => state.questionMode && !revealed.has(event.id) ? "?" : timestamp(event.timestamp);
+const eventClock = event => causalEvents.get(event.id)?.after ?? event.timestamp;
+const displayedTimestamp = event => state.questionMode && !revealed.has(event.id) ? "?" : timestamp(eventClock(event));
 const answerLabel = (name, stamp) => stamp === "?" ? `Show answer for ${name}` : `Show calculation for ${name}, ${stamp}`;
 
-function canDeliver({sender, vector}, delivered) {
-  return vector.every((count, i) =>
-    i === sender ? count === delivered[i] + 1 : count <= delivered[i]
-  );
+function passesDeliveryCheck(count, delivered, isSender) {
+  return isSender ? count === delivered + 1 : count <= delivered;
 }
 
-function findBuffering() {
+function canDeliver({sender, vector}, delivered) {
+  return vector.every((count, i) => passesDeliveryCheck(count, delivered[i], i === sender));
+}
+
+function analyzeCausalOrdering() {
   const indices = new Map(state.processes.map(({id}, i) => [id, i]));
   const perProcess = create => state.processes.map(create);
   const zeroVector = () => perProcess(() => 0);
@@ -203,6 +218,9 @@ function findBuffering() {
   for (const [index, event] of events.entries()) {
     const process = indices.get(event.process);
     const knowledge = traceKnowledge[process];
+    const receiverClock = delivered[process];
+    const detail = {after: receiverClock.slice()};
+    result.set(event.id, detail);
     if (event.kind === "send") {
       // One sender sequence per destination so unicasts create no gaps elsewhere.
       for (const recipient of recipients.get(event.id) ?? []) {
@@ -220,44 +238,64 @@ function findBuffering() {
       vector.map((count, source) => Math.max(count, matrix[target][source]))
     );
     const vector = matrix[process];
-    const receiverClock = delivered[process];
+    detail.vector = vector;
+    detail.delivered = receiverClock.slice();
     const arrival = {sender, vector};
     const queue = queues[process];
     if (!canDeliver(arrival, receiverClock)) {
-      const blockers = vector.flatMap((count, source) =>
-        sentTo[process][source].slice(receiverClock[source], count - Number(source === sender))
-      );
-      result.set(event.id, {blockers, vector, delivered: receiverClock.slice()});
+      detail.failures = vector.flatMap((count, source) => {
+        const isSender = source === sender;
+        const deliveredCount = receiverClock[source];
+        if (passesDeliveryCheck(count, deliveredCount, isSender)) return [];
+        return [{
+          source, isSender, count, deliveredCount,
+          blockers: sentTo[process][source].slice(deliveredCount, count - Number(isSender))
+        }];
+      });
       queue.push(arrival);
       continue;
     }
 
     receiverClock[sender] = vector[sender];
+    let released = 0;
     for (let ready = queue.findIndex(message => canDeliver(message, receiverClock));
       ready !== -1; ready = queue.findIndex(message => canDeliver(message, receiverClock))) {
       const [message] = queue.splice(ready, 1);
       receiverClock[message.sender] = message.vector[message.sender];
+      released += 1;
     }
+    detail.after = receiverClock.slice();
+    detail.released = released;
   }
   return result;
 }
 
 function renderBuffering() {
-  buffering = highlightBuffering ? findBuffering() : new Map();
+  if (state.mode !== "causal") highlightBuffering = false;
   $("highlight-buffering").setAttribute("aria-pressed", String(highlightBuffering));
   const status = $("buffering-status");
   status.hidden = !highlightBuffering;
-  status.textContent = buffering.size
-    ? `${buffering.size} ${buffering.size === 1 ? "receive would wait" : "receives would wait"} for an earlier message.`
+  const count = [...causalEvents.values()].filter(detail => detail.failures).length;
+  status.textContent = count
+    ? `${count} ${count === 1 ? "receive would wait" : "receives would wait"} for an earlier message.`
     : "No received messages would need buffering.";
 }
 
-function bufferLabel(event) {
-  const detail = buffering.get(event.id);
-  if (!detail) return "";
-  const {blockers, vector, delivered} = detail;
+function bufferingExplanation({failures, vector, delivered}) {
+  const blockers = failures.flatMap(failure => failure.blockers);
   const reason = blockers.length ? `Would buffer · waiting for ${blockers.join(", ")}` : "Would buffer";
-  return `${reason} · Message vector ${timestamp(vector)} · Delivered vector ${timestamp(delivered)}`;
+  const comparisons = failures.map(({source, isSender, count, deliveredCount}) => {
+    const name = state.processes[source].name;
+    return isSender
+      ? `${name} (sender): sequence ${count}, expected ${deliveredCount + 1} (${deliveredCount} + 1)`
+      : `${name} (dependency): ${count} > ${deliveredCount} delivered`;
+  });
+  return [reason, `Message vector ${timestamp(vector)}`, `Delivered vector ${timestamp(delivered)}`, ...comparisons].join(" · ");
+}
+
+function bufferLabel(event) {
+  const detail = causalEvents.get(event.id);
+  return highlightBuffering && detail?.failures ? bufferingExplanation(detail) : "";
 }
 
 function clearAnswers() {
@@ -275,10 +313,27 @@ function renderDeduction() {
   const process = state.processes[processIndex];
   const previousIndex = computed.events.findLastIndex((prior, i) => i < index && prior.process === event.process);
   const sendIndex = computed.events.findIndex(prior => prior.id === event.send);
-  const before = computed.events[previousIndex]?.timestamp ?? (state.mode === "lamport" ? 0 : Array(state.processes.length).fill(0));
+  const prior = computed.events[previousIndex];
+  const before = prior ? eventClock(prior) : state.mode === "lamport" ? 0 : Array(state.processes.length).fill(0);
   const incoming = computed.events[sendIndex]?.timestamp;
   const after = timestamp(event.timestamp);
   const component = `V[${processIndex + 1}] (${process.name})`;
+  $("deduction-title").textContent = `e${index + 1} · ${process.name} · ${event.kind}`;
+  $("deduction-before").textContent = `${timestamp(before)} (${previousIndex < 0 ? "initial clock" : `after e${previousIndex + 1}`})`;
+  if (state.mode === "causal") {
+    const detail = causalEvents.get(event.id);
+    $("deduction-info").textContent = detail.vector
+      ? `Message from e${sendIndex + 1} carries ${timestamp(detail.vector)} for this receiver.`
+      : "The delivered vector counts incoming messages from each sender.";
+    let result = `Delivered vector stays at ${timestamp(detail.after)}.`;
+    if (detail.failures) result = bufferingExplanation(detail);
+    else if (detail.vector) {
+      const release = detail.released ? ` Released ${detail.released} buffered ${detail.released === 1 ? "message" : "messages"}.` : "";
+      result = `Delivery checks pass. Delivered vector becomes ${timestamp(detail.after)}.${release}`;
+    }
+    $("deduction-result").textContent = result;
+    return;
+  }
   let calculation;
   if (state.mode === "lamport") {
     calculation = incoming === undefined ? `${before} + 1 = ${after}` : `max(${before}, ${incoming}) + 1 = ${after}`;
@@ -294,8 +349,6 @@ function renderDeduction() {
     }
   }
 
-  $("deduction-title").textContent = `e${index + 1} · ${process.name} · ${event.kind}`;
-  $("deduction-before").textContent = `${timestamp(before)} (${previousIndex < 0 ? "initial clock" : `after e${previousIndex + 1}`})`;
   $("deduction-info").textContent = incoming === undefined
     ? (event.kind === "send" ? "A send event advances the local clock and carries the new value." : "An internal event advances the local clock.")
     : `Message from e${sendIndex + 1} carries ${timestamp(incoming)}.`;
@@ -331,7 +384,7 @@ function renderDiagram() {
   const rows = new Map(state.processes.map((process, i) => [process.id, 86 + i * 115]));
   const positions = new Map();
   const columns = new Map(state.processes.map(process => [process.id, 0]));
-  const longest = Math.max(1, ...computed.events.map(event => timestamp(event.timestamp).length));
+  const longest = Math.max(1, ...computed.events.map(event => timestamp(eventClock(event)).length));
   const spacing = Math.max(90, longest * 7.2 + 30);
   const batches = new Map();
   const metadata = new Map(state.events.map(event => [event.id, event]));
@@ -373,7 +426,7 @@ function renderDiagram() {
     const from = positions.get(event.send), to = positions.get(event.id);
     const direction = Math.sign(to.y - from.y);
     const number = ++messageNumber;
-    const buffered = buffering.has(event.id);
+    const buffered = highlightBuffering && Boolean(causalEvents.get(event.id)?.failures);
     svg.append(svgElement("path", {
       d: `M ${from.x + 5} ${from.y + direction * 8} L ${to.x - 5} ${to.y - direction * 10}`,
       class: buffered ? "message-line needs-buffering" : "message-line",
@@ -439,11 +492,17 @@ function renderLedger() {
     const type = replyTo ? "broadcast reply" : event.broadcast ? "broadcast send" : event.kind;
     const buffer = bufferLabel(event);
     if (buffer) row.classList.add("needs-buffering");
-    const details = [replyTo && `reply to ${eventNames.get(replyTo)}`, message, buffer].filter(Boolean).join(" · ");
+    const details = [replyTo && `reply to ${eventNames.get(replyTo)}`, message].filter(Boolean).join(" · ");
     for (const text of [name, names.get(event.process), type, details]) {
       const cell = document.createElement("td");
       cell.textContent = text;
       row.append(cell);
+    }
+    if (buffer) {
+      const explanation = document.createElement("span");
+      explanation.className = "buffering-explanation";
+      explanation.textContent = buffer;
+      row.lastChild.append(explanation);
     }
     const stampCell = document.createElement("td");
     const stamp = displayedTimestamp(event);
@@ -465,6 +524,7 @@ function renderLedger() {
 }
 
 function render() {
+  causalEvents = state.mode === "causal" ? analyzeCausalOrdering() : new Map();
   renderControls();
   $("timeline-heading").textContent = titles[state.mode];
   const [summary, title, body] = explanations[state.mode];
@@ -476,6 +536,7 @@ function render() {
   const messages = computed.events.filter(event => event.kind === "receive").length;
   $("stats").textContent = `${state.processes.length} processes · ${computed.events.length} events · ${messages} messages`;
   $("question-hint").hidden = !state.questionMode || !computed.events.length;
+  $("ledger-clock-heading").textContent = state.mode === "causal" ? "Delivered vector" : "Timestamp";
   renderBuffering();
   renderDiagram();
   renderLedger();

@@ -96,6 +96,7 @@ try {
   await command("Page.navigate", {url});
   await idle();
   assert.equal(await evaluate('document.getElementById("mode").value'), "lamport");
+  assert.equal(await evaluate('document.querySelector(".buffering-controls").hidden'), true);
   assert.equal(await evaluate('document.getElementById("send-message").disabled'), true);
   // The shortcut fills missing names without replacing existing participants.
   await addProcess("P1");
@@ -192,16 +193,24 @@ try {
     return [name(first.process), name(reply.process), reply.replyTo === original.id,
       state.events.filter(e => e.send === reply.id).map(e => name(e.process)).sort()];
   })()`), ["P3", "P3", true, ["P1", "P2", "P4"]]);
-  await select("mode", "lamport");
+  await select("mode", "causal");
+  assert.equal(await evaluate('document.querySelector(".buffering-controls").hidden'), false);
   await click("highlight-buffering");
   assert.deepEqual(await evaluate('[...document.querySelectorAll("#event-rows .needs-buffering")].map(row => row.cells[1].textContent)'), ["P2"]);
   assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /Message vector \[1, 0, 1, 0\].*Delivered vector \[0, 0, 0, 0\]/);
+  assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /P1 \(dependency\): 1 > 0 delivered/);
+  assert.equal(await evaluate('document.querySelector("#event-rows .needs-buffering td:last-child").textContent'), "[0, 0, 0, 0]");
+  await click("question-mode");
+  await evaluate('document.querySelector("#event-rows .needs-buffering button").click()');
+  assert.match(await value("deduction-result"), /P1 \(dependency\): 1 > 0 delivered/);
+  await click("question-mode");
   assert.equal(await evaluate('document.querySelectorAll("#timeline g.needs-buffering").length'), 1);
-  for (const mode of ["vector", "modified"]) {
+  for (const mode of ["lamport", "vector", "modified"]) {
     await select("mode", mode);
-    assert.deepEqual(await evaluate('[...document.querySelectorAll("#event-rows .needs-buffering")].map(row => row.cells[1].textContent)'), ["P2"]);
+    assert.equal(await evaluate('document.querySelector(".buffering-controls").hidden'), true);
+    assert.equal(await evaluate('document.querySelectorAll(".needs-buffering").length'), 0);
   }
-  await click("highlight-buffering");
+  await select("mode", "causal");
   assert.equal(await evaluate('document.querySelectorAll(".needs-buffering").length'), 0);
   await evaluate(`change(next => {
     const [sender, receiver, , other] = next.processes.map(p => p.id);
@@ -221,6 +230,8 @@ try {
   await click("highlight-buffering");
   assert.deepEqual(await evaluate('[...document.querySelectorAll("#timeline g.needs-buffering")].map(group => group.dataset.event)'), ["second-receive"]);
   assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /waiting for e4.*Message vector \[2, 0, 0, 0\].*Delivered vector \[0, 0, 0, 0\]/);
+  assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /P1 \(sender\): sequence 2, expected 1/);
+  assert.equal(await lastStamp(), "[3, 0, 0, 0]");
   await click("highlight-buffering");
   // The original broadcast fits, but the scheduled reply would exceed capacity.
   await evaluate(`change(next => {
