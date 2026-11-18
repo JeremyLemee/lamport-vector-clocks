@@ -3,7 +3,7 @@
 const $ = id => document.getElementById(id);
 const STORAGE_KEY = "logical-clock-workspace-v1";
 const clone = value => structuredClone(value);
-const fresh = () => ({mode: "lamport", processes: [], events: [], allowInternal: true, pending: [], delayMin: 1, delayMax: 5});
+const fresh = () => ({mode: "lamport", processes: [], events: [], allowInternal: true, questionMode: false, pending: [], delayMin: 1, delayMax: 5});
 const titles = {lamport: "Lamport clocks", vector: "Vector clocks", modified: "Modified vector clocks"};
 const explanations = {
   lamport: ["A scalar clock that respects causal order.", "One counter per process.", "Internal and send events: L ← L + 1. Receive a message timestamped t: L ← max(L, t) + 1. All clocks start at zero. L(a) < L(b) alone does not establish that a caused b."],
@@ -15,6 +15,8 @@ let computed = {events: []};
 let history = [];
 let busy = true;
 let deliveryTimer;
+const revealed = new Set();
+let selectedAnswer = null;
 const pendingDeliveries = () => state.pending || [];
 
 function error(message = "") {
@@ -42,7 +44,7 @@ async function calculate(next) {
   return result;
 }
 
-async function change(edit, {undo = false, recordHistory = true} = {}) {
+async function change(edit, {undo = false, recordHistory = true, resetAnswers = false} = {}) {
   if (busy) return false;
   busy = true;
   error();
@@ -54,7 +56,10 @@ async function change(edit, {undo = false, recordHistory = true} = {}) {
     if (undo) history.pop();
     else if (recordHistory) history.push(clone(state));
     if (history.length > 100) history.shift();
-    state = {...candidate, mode: result.mode, processes: result.processes};
+    if (undo || resetAnswers || result.mode !== state.mode || result.processes.length !== state.processes.length) {
+      clearAnswers();
+    }
+    state = {...candidate, mode: result.mode, processes: result.processes, questionMode: state.questionMode};
     computed = result;
     save();
     render();
@@ -123,6 +128,8 @@ function renderControls() {
   const editingLocked = busy || inFlight > 0;
   $("mode").value = state.mode;
   $("allow-internal").checked = state.allowInternal;
+  $("question-mode").checked = state.questionMode;
+  $("question-mode").disabled = busy;
   options("internal-process", state.processes);
   options("message-from", state.processes);
   destinations();
@@ -158,6 +165,61 @@ function renderControls() {
 }
 
 const timestamp = value => Array.isArray(value) ? `[${value.join(", ")}]` : String(value);
+const displayedTimestamp = event => state.questionMode && !revealed.has(event.id) ? "?" : timestamp(event.timestamp);
+const answerLabel = (name, stamp) => stamp === "?" ? `Show answer for ${name}` : `Show calculation for ${name}, ${stamp}`;
+
+function clearAnswers() {
+  revealed.clear();
+  selectedAnswer = null;
+}
+
+function renderDeduction() {
+  const index = computed.events.findIndex(event => event.id === selectedAnswer);
+  $("deduction").hidden = !state.questionMode || index < 0;
+  if ($("deduction").hidden) return;
+
+  const event = computed.events[index];
+  const processIndex = state.processes.findIndex(process => process.id === event.process);
+  const process = state.processes[processIndex];
+  const previousIndex = computed.events.findLastIndex((prior, i) => i < index && prior.process === event.process);
+  const sendIndex = computed.events.findIndex(prior => prior.id === event.send);
+  const before = computed.events[previousIndex]?.timestamp ?? (state.mode === "lamport" ? 0 : Array(state.processes.length).fill(0));
+  const incoming = computed.events[sendIndex]?.timestamp;
+  const after = timestamp(event.timestamp);
+  const component = `V[${processIndex + 1}] (${process.name})`;
+  let calculation;
+  if (state.mode === "lamport") {
+    calculation = incoming === undefined ? `${before} + 1 = ${after}` : `max(${before}, ${incoming}) + 1 = ${after}`;
+  } else if (incoming === undefined) {
+    calculation = `Increment ${component} from ${before[processIndex]} to ${event.timestamp[processIndex]} → ${after}`;
+  } else {
+    const merged = before.map((value, i) => Math.max(value, incoming[i]));
+    calculation = `Componentwise max → ${timestamp(merged)}`;
+    if (state.mode === "vector") {
+      calculation += `, then increment ${component} from ${merged[processIndex]} to ${event.timestamp[processIndex]} → ${after}`;
+    } else {
+      calculation += " (the receive ends after the merge)";
+    }
+  }
+
+  $("deduction-title").textContent = `e${index + 1} · ${process.name} · ${event.kind}`;
+  $("deduction-before").textContent = `${timestamp(before)} (${previousIndex < 0 ? "initial clock" : `after e${previousIndex + 1}`})`;
+  $("deduction-info").textContent = incoming === undefined
+    ? (event.kind === "send" ? "A send event advances the local clock and carries the new value." : "An internal event advances the local clock.")
+    : `Message from e${sendIndex + 1} carries ${timestamp(incoming)}.`;
+  $("deduction-result").textContent = calculation;
+}
+
+function showAnswer(id) {
+  if (!state.questionMode) return;
+  revealed.add(id);
+  selectedAnswer = id;
+  renderDiagram();
+  renderLedger();
+  renderDeduction();
+  $("deduction-title").focus({preventScroll: true});
+  $("deduction").scrollIntoView({block: "nearest"});
+}
 
 function svgElement(tag, attributes = {}, text) {
   const element = document.createElementNS("http://www.w3.org/2000/svg", tag);
@@ -169,6 +231,7 @@ function svgElement(tag, attributes = {}, text) {
 function renderDiagram() {
   const svg = $("timeline");
   svg.replaceChildren();
+  svg.setAttribute("role", state.questionMode ? "group" : "img");
   $("empty").hidden = state.processes.length > 0;
   svg.toggleAttribute("hidden", !state.processes.length);
   if (!state.processes.length) return;
@@ -194,7 +257,7 @@ function renderDiagram() {
   svg.setAttribute("height", height);
   svg.setAttribute("viewBox", `0 0 ${width} ${height}`);
   svg.append(svgElement("title", {id: "svg-title"}, `${titles[state.mode]} execution timeline`));
-  svg.append(svgElement("desc", {id: "svg-description"}, "Time moves left to right on each process lane. Arrows connect sends to receives. The event ledger lists all timestamps."));
+  svg.append(svgElement("desc", {id: "svg-description"}, "Time moves left to right on each process lane. Arrows connect sends to receives. Timestamps are also available in the event ledger."));
   const defs = svgElement("defs");
   const marker = svgElement("marker", {id: "arrow", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse"});
   marker.append(svgElement("path", {d: "M 0 0 L 10 5 L 0 10 z", fill: "#176c60"}));
@@ -220,12 +283,28 @@ function renderDiagram() {
   }
   computed.events.forEach((event, index) => {
     const {x, y} = positions.get(event.id);
+    const name = `e${index + 1}`;
+    const stamp = displayedTimestamp(event);
     const group = svgElement("g", {"data-event": event.id});
-    group.append(svgElement("title", {}, `e${index + 1}: ${labels.get(event.process)}, ${event.kind}, ${timestamp(event.timestamp)}`));
+    group.append(svgElement("title", {}, `${name}: ${labels.get(event.process)}, ${event.kind}, ${stamp}`));
+    if (state.questionMode) {
+      group.setAttribute("role", "button");
+      group.setAttribute("tabindex", "0");
+      group.setAttribute("class", "question-event");
+      group.setAttribute("aria-label", answerLabel(`${name} on ${labels.get(event.process)}`, stamp));
+      const hitWidth = Math.max(44, stamp.length * 7.2 + 12);
+      group.append(svgElement("rect", {x: x - hitWidth / 2, y: y - 39, width: hitWidth, height: 73, rx: 6, class: "event-hit"}));
+      group.addEventListener("click", () => showAnswer(event.id));
+      group.addEventListener("keydown", key => {
+        if (key.key !== "Enter" && key.key !== " ") return;
+        key.preventDefault();
+        showAnswer(event.id);
+      });
+    }
     const color = {internal: "#617476", send: "#176c60", receive: "#b86436"}[event.kind];
     group.append(svgElement("circle", {cx: x, cy: y, r: 7, fill: color, stroke: "white", "stroke-width": 3}));
-    group.append(svgElement("text", {x, y: y - 22, class: "event-label", "text-anchor": "middle"}, timestamp(event.timestamp)));
-    group.append(svgElement("text", {x, y: y + 27, class: "event-name", "text-anchor": "middle"}, `e${index + 1}`));
+    group.append(svgElement("text", {x, y: y - 22, class: "event-label", "text-anchor": "middle"}, stamp));
+    group.append(svgElement("text", {x, y: y + 27, class: "event-name", "text-anchor": "middle"}, name));
     svg.append(group);
   });
   svg.append(svgElement("text", {x: width - 30, y: height - 20, class: "time-label", "text-anchor": "end"}, "local event order →"));
@@ -246,11 +325,26 @@ function renderLedger() {
     const row = document.createElement("tr");
     const delay = metadata.get(event.id)?.delaySeconds;
     const message = event.kind === "receive" ? `from ${eventNames.get(event.send)}${delay !== undefined ? ` · ${delay.toFixed(2)}s` : ""}` : receives.has(event.id) ? `to ${receives.get(event.id).join(", ")}` : "—";
-    for (const text of [eventNames.get(event.id), names.get(event.process), event.broadcast ? "broadcast send" : event.kind, message, timestamp(event.timestamp)]) {
+    const name = eventNames.get(event.id);
+    for (const text of [name, names.get(event.process), event.broadcast ? "broadcast send" : event.kind, message]) {
       const cell = document.createElement("td");
       cell.textContent = text;
       row.append(cell);
     }
+    const stampCell = document.createElement("td");
+    const stamp = displayedTimestamp(event);
+    if (state.questionMode) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "stamp-button";
+      button.textContent = stamp;
+      button.setAttribute("aria-label", answerLabel(name, stamp));
+      button.addEventListener("click", () => showAnswer(event.id));
+      stampCell.append(button);
+    } else {
+      stampCell.textContent = stamp;
+    }
+    row.append(stampCell);
     rows.append(row);
   }
   $("ledger-count").textContent = `${computed.events.length} events`;
@@ -267,8 +361,10 @@ function render() {
   $("vector-order").textContent = state.mode === "lamport" ? "Send events attach their current clock to the message." : `Vector component order: [${state.processes.map(process => process.name).join(", ")}].`;
   const messages = computed.events.filter(event => event.kind === "receive").length;
   $("stats").textContent = `${state.processes.length} processes · ${computed.events.length} events · ${messages} messages`;
+  $("question-hint").hidden = !state.questionMode || !computed.events.length;
   renderDiagram();
   renderLedger();
+  renderDeduction();
 }
 
 $("process-form").addEventListener("submit", async event => {
@@ -337,8 +433,14 @@ $("allow-internal").addEventListener("change", event => {
   const enabled = event.target.checked;
   change(next => { next.allowInternal = enabled; });
 });
+$("question-mode").addEventListener("change", event => {
+  state.questionMode = event.target.checked;
+  clearAnswers();
+  save();
+  render();
+});
 $("undo").addEventListener("click", () => { if (history.length) change(() => clone(history.at(-1)), {undo: true}); });
-$("reset").addEventListener("click", () => change(() => ({...fresh(), mode: state.mode, allowInternal: state.allowInternal})));
+$("reset").addEventListener("click", () => change(() => ({...fresh(), mode: state.mode, allowInternal: state.allowInternal}), {resetAnswers: true}));
 $("example").addEventListener("click", () => change(() => ({
   mode: state.mode, allowInternal: state.allowInternal,
   processes: [{id: "p1", name: "P1"}, {id: "p2", name: "P2"}, {id: "p3", name: "P3"}],
@@ -352,7 +454,7 @@ $("example").addEventListener("click", () => change(() => ({
     {id: "g", process: "p2", kind: "send"},
     {id: "h", process: "p1", kind: "receive", send: "g"}
   ]
-})));
+}), {resetAnswers: true}));
 
 async function start() {
   renderControls();
@@ -373,7 +475,7 @@ async function start() {
       // Validate future deliveries too, before resuming a restored broadcast.
       if (pending.length) await calculate({...saved, events: [...saved.events, ...pending]});
       const result = await calculate(saved);
-      state = {...fresh(), ...saved, pending, mode: result.mode, processes: result.processes};
+      state = {...fresh(), ...saved, pending, mode: result.mode, processes: result.processes, questionMode: saved.questionMode === true};
       computed = result;
       $("delay-min").value = state.delayMin;
       $("delay-max").value = state.delayMax;

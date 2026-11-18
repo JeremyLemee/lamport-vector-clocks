@@ -1,7 +1,8 @@
 // Optional browser integration test. Node >=22 and a Chromium executable only;
 // no npm dependencies. Run after `uv sync` with CHROMIUM_EXECUTABLE set.
 import {spawn} from "node:child_process";
-import {mkdtempSync, rmSync, writeFileSync} from "node:fs";
+import {mkdtempSync, writeFileSync} from "node:fs";
+import {rm} from "node:fs/promises";
 import {tmpdir} from "node:os";
 import {join, resolve} from "node:path";
 import assert from "node:assert/strict";
@@ -228,6 +229,41 @@ try {
   assert.equal(await lastStamp(), "1", "Saved execution without a mode must restore using Lamport clocks");
   assert.equal(await evaluate('document.getElementById("mode").value'), "lamport");
   await click("example");
+  await click("question-mode");
+  assert.equal(await lastStamp(), "?");
+  assert.equal(await evaluate('document.querySelector("[data-event=h] .event-label").textContent'), "?");
+  assert.equal(await evaluate('document.querySelector("[data-event=h] title").textContent.includes("6")'), false);
+  assert.equal(await evaluate('document.getElementById("deduction").hidden'), true);
+  await evaluate(`document.querySelector('[data-event=h]').dispatchEvent(new KeyboardEvent('keydown', {key: 'Enter', bubbles: true}))`);
+  assert.equal(await lastStamp(), "6");
+  assert.match(await value("deduction-before"), /2/);
+  assert.match(await value("deduction-info"), /e7.*5/);
+  assert.match(await value("deduction-result"), /max\(2, 5\) \+ 1 = 6/);
+  assert.equal(await evaluate('document.querySelector("[data-event=g] .event-label").textContent'), "?");
+  await evaluate(`document.querySelector('[data-event=a]').dispatchEvent(new KeyboardEvent('keydown', {key: ' ', bubbles: true}))`);
+  assert.match(await value("deduction-before"), /0.*initial clock/);
+  assert.match(await value("deduction-result"), /0 \+ 1 = 1/);
+  assert.equal(await lastStamp(), "6", "Revealing an event keeps earlier answers visible");
+  await click("send-message");
+  assert.equal(await lastStamp(), "?", "New events start hidden in question mode");
+  await click("undo");
+  for (const [mode, stamp, rule] of [["vector", "[3, 3, 2]", /increment/i], ["modified", "[2, 1, 2]", /componentwise/i]]) {
+    await select("mode", mode);
+    assert.equal(await lastStamp(), "?");
+    assert.equal(await evaluate('document.getElementById("deduction").hidden'), true);
+    await evaluate('document.querySelector(".event-details").open = true');
+    await evaluate('document.querySelector("#event-rows tr:last-child button").click()');
+    assert.equal(await evaluate('document.querySelector("[data-event=h] .event-label").textContent'), stamp);
+    assert.match(await value("deduction-result"), rule);
+  }
+  await command("Page.reload");
+  await waitFor(() => evaluate('document.getElementById("status")?.textContent.includes("Restored")'), "question mode restoration");
+  assert.equal(await lastStamp(), "?");
+  await click("reset");
+  await click("example");
+  assert.equal(await lastStamp(), "?");
+  await click("question-mode");
+  assert.equal(await lastStamp(), "[2, 1, 2]");
   if (process.env.SCREENSHOT_PATH) {
     const screenshot = await command("Page.captureScreenshot", {format: "png"});
     writeFileSync(process.env.SCREENSHOT_PATH, Buffer.from(screenshot.data, "base64"));
@@ -235,11 +271,12 @@ try {
   const expectedBadRequests = errors.filter(error => typeof error === "string" && error === "Failed to load resource: the server responded with a status of 400 (Bad Request)");
   assert.equal(expectedBadRequests.length, 2, "Only the duplicate name and corrupt saved execution should return 400");
   assert.deepEqual(errors.filter(error => !expectedBadRequests.includes(error)), [], "No unexpected browser runtime or console errors");
-  console.log("Browser smoke passed: quick processes, concurrent broadcasts, independent delays, cancellation, resumed deliveries, event limits, editing, clocks, persistence and mobile layout.");
 } finally {
   socket?.close();
   browser?.kill();
   server.kill();
   if (browser) await new Promise(resolve => browser.exitCode !== null || browser.signalCode !== null ? resolve() : browser.once("exit", resolve));
-  rmSync(profile, {recursive: true, force: true});
+  // Chromium helper processes can still be closing files after the browser exits.
+  await rm(profile, {recursive: true, force: true, maxRetries: 6, retryDelay: 100});
 }
+console.log("Browser smoke passed: quick processes, broadcasts, event limits, editing, clocks, question mode, persistence and mobile layout.");

@@ -19,6 +19,7 @@
       <div><label for="mode">Clock model</label><select id="mode"><option value="lamport">Lamport clocks</option><option value="vector">Vector clocks</option><option value="modified">Modified vector clocks</option></select></div>
       <p id="mode-summary">A scalar clock that respects causal order.</p>
       <label class="toggle"><input type="checkbox" id="allow-internal" checked> Allow internal events</label>
+      <label class="toggle"><input type="checkbox" id="question-mode"> Question mode</label>
     </section>
 
     <div id="error" class="notice error" role="alert" hidden></div>
@@ -63,7 +64,16 @@
       <section class="visual-panel" aria-labelledby="timeline-heading">
         <div class="diagram-toolbar"><div><p class="step">EXECUTION TIMELINE</p><h2 id="timeline-heading">Lamport clocks</h2></div><div class="actions"><button id="example" class="secondary">Load example</button><button id="undo" class="quiet">Undo</button><button id="reset" class="quiet danger">Reset</button></div></div>
         <div class="diagram-meta"><span id="stats" aria-live="polite">0 processes · 0 events · 0 messages</span><span>local order →</span></div>
+        <p id="question-hint" class="question-hint" hidden>Select a timestamp in the timeline or event ledger to reveal its value and calculation.</p>
         <div class="diagram-scroll" tabindex="0" role="region" aria-label="Scrollable execution timeline"><div id="empty" class="empty"><div class="empty-icon">↗</div><h3>A blank page in distributed time.</h3><p>Add a process to get started, or load the example to see clocks in motion.</p></div><svg id="timeline" role="img" aria-labelledby="svg-title svg-description" hidden></svg></div>
+        <section id="deduction" class="deduction" aria-labelledby="deduction-title" hidden>
+          <h3 id="deduction-title" tabindex="-1"></h3>
+          <dl>
+            <div><dt>Value before</dt><dd id="deduction-before"></dd></div>
+            <div><dt>New information</dt><dd id="deduction-info"></dd></div>
+            <div><dt>New value</dt><dd id="deduction-result"></dd></div>
+          </dl>
+        </section>
         <div class="legend"><span><i class="dot internal"></i> Internal</span><span><i class="dot send"></i> Send</span><span><i class="dot receive"></i> Receive</span><span class="legend-note">Position across lanes does not imply causality.</span></div>
         <div class="rules"><p class="step">HOW THIS CLOCK WORKS</p><h3 id="rule-title">One counter per process.</h3><p id="rule-body"></p><p id="vector-order" class="hint"></p><p id="modified-note" class="modified-note" hidden>Receives do not increment a component. Timestamps can be equal for distinct, causally related events; strict vector comparison cannot recover every causal relation in this mode.</p></div>
       </section>
