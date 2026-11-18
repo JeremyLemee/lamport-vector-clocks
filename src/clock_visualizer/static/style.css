@@ -16,3 +16,11 @@ svg{display:block}.lane{stroke:#cedbd3;stroke-width:1.5}.lane-label{font:600 13p
 #deduction-result{font-weight:600}
 @media(max-width:900px){.deduction dl{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:700px){.question-hint{padding-inline:20px}.deduction{margin-inline:20px}}
+.reply-settings{margin:12px 0 16px}
+.buffering-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px 14px;padding:10px 24px;border-bottom:1px solid var(--line)}
+.buffering-controls p{font-size:12px;color:#993f2e}
+#highlight-buffering[aria-pressed="true"]{background:#fff1ed;border-color:#e2b7ad;color:#993f2e}
+.message-line.needs-buffering{stroke:#993f2e;stroke-width:2.4;stroke-dasharray:6 3;opacity:1}
+.buffering-ring{fill:none;stroke:#993f2e;stroke-width:2}
+tr.needs-buffering{background:#fff1ed;color:#84382b}
+@media(max-width:700px){.buffering-controls{padding-inline:20px}}

@@ -106,6 +106,8 @@ try {
   assert.match(await value("stats"), /^1 processes/);
   await click("quick-processes");
   await select("mode", "vector");
+  // Preserve the existing broadcast-only scenario before testing replies.
+  await click("auto-reply");
   await click("broadcast-message");
   assert.match(await value("error"), /Choose at least one/);
   await evaluate(`(() => {
@@ -158,15 +160,77 @@ try {
   await waitFor(() => evaluate('document.getElementById("status")?.textContent.includes("Restored")'), "broadcast restoration");
   await idle();
   assert.match(await value("stats"), /^4 processes · 4 events · 3 messages$/);
-  // Capacity must include future receives, not only the initial send.
+  await click("reset");
+  await click("quick-processes");
+  await click("auto-reply");
+  await evaluate(`(() => {
+    document.querySelector('#broadcast-processes input').checked = true;
+    document.getElementById('reply-delay').value = '0.1';
+    document.getElementById('delay-min').value = '0.2';
+    document.getElementById('delay-max').value = '1.2';
+    const original = Math.random;
+    const samples = [.99, 0, .6, 0, 0, .99];
+    Math.random = () => samples.shift();
+    document.getElementById('broadcast-message').click();
+    Math.random = original;
+  })()`);
+  await waitFor(() => evaluate('state.pending.length && !busy'), "queued broadcast and reply");
+  assert.equal(await evaluate(`(() => {
+    const original = state.events[0];
+    const reply = state.pending.find(event => event.replyTo === original.id);
+    const first = Math.min(...state.pending.filter(event => event.send === original.id).map(event => event.deliverAt));
+    return reply.deliverAt - first;
+  })()`), 100, "The reply send is scheduled 0.1 seconds after the first receive");
+  await command("Page.reload");
+  await waitFor(() => evaluate('document.getElementById("status")?.textContent.includes("Restored")'), "queued reply restoration");
+  await idle();
+  assert.match(await value("stats"), /^4 processes · 8 events · 6 messages$/);
+  assert.deepEqual(await evaluate(`(() => {
+    const [original, reply] = state.events.filter(e => e.kind === 'send');
+    const first = state.events.find(e => e.send === original.id);
+    const name = id => state.processes.find(p => p.id === id).name;
+    return [name(first.process), name(reply.process), reply.replyTo === original.id,
+      state.events.filter(e => e.send === reply.id).map(e => name(e.process)).sort()];
+  })()`), ["P3", "P3", true, ["P1", "P2", "P4"]]);
+  await select("mode", "lamport");
+  await click("highlight-buffering");
+  assert.deepEqual(await evaluate('[...document.querySelectorAll("#event-rows .needs-buffering")].map(row => row.cells[1].textContent)'), ["P2"]);
+  assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /Message vector \[1, 0, 1, 0\].*Delivered vector \[0, 0, 0, 0\]/);
+  assert.equal(await evaluate('document.querySelectorAll("#timeline g.needs-buffering").length'), 1);
+  for (const mode of ["vector", "modified"]) {
+    await select("mode", mode);
+    assert.deepEqual(await evaluate('[...document.querySelectorAll("#event-rows .needs-buffering")].map(row => row.cells[1].textContent)'), ["P2"]);
+  }
+  await click("highlight-buffering");
+  assert.equal(await evaluate('document.querySelectorAll(".needs-buffering").length'), 0);
   await evaluate(`change(next => {
-    next.events = Array.from({length:497}, (_, i) => ({id:'capacity-'+i, process:next.processes[0].id, kind:'internal'}));
+    const [sender, receiver, , other] = next.processes.map(p => p.id);
+    next.events = [
+      {id: 'internal', kind: 'internal', process: sender},
+      {id: 'unicast', kind: 'send', process: sender},
+      {id: 'unicast-receive', kind: 'receive', process: other, send: 'unicast'},
+      {id: 'first', kind: 'send', process: sender},
+      {id: 'second', kind: 'send', process: sender},
+      {id: 'second-receive', kind: 'receive', process: receiver, send: 'second'},
+      {id: 'first-receive', kind: 'receive', process: receiver, send: 'first'},
+      {id: 'third', kind: 'send', process: sender},
+      {id: 'third-receive', kind: 'receive', process: receiver, send: 'third'}
+    ];
+  })`);
+  await idle();
+  await click("highlight-buffering");
+  assert.deepEqual(await evaluate('[...document.querySelectorAll("#timeline g.needs-buffering")].map(group => group.dataset.event)'), ["second-receive"]);
+  assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /waiting for e4.*Message vector \[2, 0, 0, 0\].*Delivered vector \[0, 0, 0, 0\]/);
+  await click("highlight-buffering");
+  // The original broadcast fits, but the scheduled reply would exceed capacity.
+  await evaluate(`change(next => {
+    next.events = Array.from({length:493}, (_, i) => ({id:'capacity-'+i, process:next.processes[0].id, kind:'internal'}));
   })`);
   await idle();
   await evaluate(`document.querySelector('#broadcast-processes input').checked = true`);
   await click("broadcast-message");
   assert.match(await value("error"), /500-event limit/);
-  assert.match(await value("stats"), /497 events/);
+  assert.match(await value("stats"), /493 events/);
   await click("reset");
   await select("mode", "lamport");
   await addProcess("P1");
@@ -279,4 +343,4 @@ try {
   // Chromium helper processes can still be closing files after the browser exits.
   await rm(profile, {recursive: true, force: true, maxRetries: 6, retryDelay: 100});
 }
-console.log("Browser smoke passed: quick processes, broadcasts, event limits, editing, clocks, question mode, persistence and mobile layout.");
+console.log("Browser smoke passed: broadcasts, automatic replies, causal buffering, event limits, editing, clocks, question mode, persistence and mobile layout.");

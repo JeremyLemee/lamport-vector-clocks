@@ -3,7 +3,10 @@
 const $ = id => document.getElementById(id);
 const STORAGE_KEY = "logical-clock-workspace-v1";
 const clone = value => structuredClone(value);
-const fresh = () => ({mode: "lamport", processes: [], events: [], allowInternal: true, questionMode: false, pending: [], delayMin: 1, delayMax: 5});
+const fresh = () => ({
+  mode: "lamport", processes: [], events: [], allowInternal: true, questionMode: false,
+  pending: [], delayMin: 1, delayMax: 5, autoReply: true, replyDelay: 0
+});
 const titles = {lamport: "Lamport clocks", vector: "Vector clocks", modified: "Modified vector clocks"};
 const explanations = {
   lamport: ["A scalar clock that respects causal order.", "One counter per process.", "Internal and send events: L ← L + 1. Receive a message timestamped t: L ← max(L, t) + 1. All clocks start at zero. L(a) < L(b) alone does not establish that a caused b."],
@@ -15,9 +18,12 @@ let computed = {events: []};
 let history = [];
 let busy = true;
 let deliveryTimer;
+let highlightBuffering = false;
+let buffering = new Map();
 const revealed = new Set();
 let selectedAnswer = null;
 const pendingDeliveries = () => state.pending || [];
+const byDeadline = (a, b) => a.deliverAt - b.deliverAt;
 
 function error(message = "") {
   $("error").textContent = message;
@@ -89,7 +95,7 @@ async function deliverMessages() {
   }
   const now = Date.now();
   const delivered = await change(next => {
-    const due = next.pending.filter(item => item.deliverAt <= now).sort((a, b) => a.deliverAt - b.deliverAt);
+    const due = next.pending.filter(item => item.deliverAt <= now).sort(byDeadline);
     next.events.push(...due.map(({deliverAt, ...event}) => event));
     next.pending = next.pending.filter(item => item.deliverAt > now);
   }, {recordHistory: false});
@@ -157,8 +163,11 @@ function renderControls() {
   }
   if (!state.processes.length) senderList.textContent = "Add processes to choose senders.";
   $("broadcast-senders").disabled = editingLocked || state.processes.length < 2;
-  for (const id of ["delay-min", "delay-max", "broadcast-message"]) $(id).disabled = editingLocked || state.processes.length < 2;
-  $("broadcast-status").textContent = inFlight ? `${inFlight} deliveries in flight. Undo or reset cancels pending messages.` : "No messages in flight.";
+  for (const id of ["delay-min", "delay-max", "broadcast-message", "auto-reply"]) $(id).disabled = editingLocked || state.processes.length < 2;
+  $("auto-reply").checked = state.autoReply;
+  $("reply-delay").disabled = $("auto-reply").disabled || !state.autoReply;
+  $("broadcast-status").textContent = inFlight ? "Messages in flight. Undo or reset cancels pending events." : "No messages in flight.";
+  $("highlight-buffering").disabled = !computed.events.some(event => event.kind === "receive");
   $("undo").disabled = busy || !history.length;
   $("reset").disabled = busy || (!state.processes.length && !state.events.length);
   $("example").disabled = busy;
@@ -167,6 +176,89 @@ function renderControls() {
 const timestamp = value => Array.isArray(value) ? `[${value.join(", ")}]` : String(value);
 const displayedTimestamp = event => state.questionMode && !revealed.has(event.id) ? "?" : timestamp(event.timestamp);
 const answerLabel = (name, stamp) => stamp === "?" ? `Show answer for ${name}` : `Show calculation for ${name}, ${stamp}`;
+
+function canDeliver({sender, vector}, delivered) {
+  return vector.every((count, i) =>
+    i === sender ? count === delivered[i] + 1 : count <= delivered[i]
+  );
+}
+
+function findBuffering() {
+  const indices = new Map(state.processes.map(({id}, i) => [id, i]));
+  const perProcess = create => state.processes.map(create);
+  const zeroVector = () => perProcess(() => 0);
+  const traceKnowledge = perProcess(() => perProcess(zeroVector));
+  const delivered = perProcess(zeroVector);
+  const queues = perProcess(() => []);
+  const sentTo = perProcess(() => perProcess(() => []));
+  const sends = new Map();
+  const recipients = new Map();
+  const events = computed.events;
+  for (const event of [...events, ...pendingDeliveries()]) {
+    if (event.kind !== "receive") continue;
+    if (!recipients.has(event.send)) recipients.set(event.send, []);
+    recipients.get(event.send).push(indices.get(event.process));
+  }
+  const result = new Map();
+  for (const [index, event] of events.entries()) {
+    const process = indices.get(event.process);
+    const knowledge = traceKnowledge[process];
+    if (event.kind === "send") {
+      // One sender sequence per destination so unicasts create no gaps elsewhere.
+      for (const recipient of recipients.get(event.id) ?? []) {
+        knowledge[recipient][process] += 1;
+        sentTo[recipient][process].push(`e${index + 1}`);
+      }
+      sends.set(event.id, {sender: process, matrix: knowledge.map(vector => vector.slice())});
+    }
+    if (event.kind !== "receive") continue;
+
+    const {sender, matrix} = sends.get(event.send);
+    // Follow the actual trace when stamping later sends, including replies.
+    // The simulated delivery vector below advances only on causal delivery.
+    traceKnowledge[process] = knowledge.map((vector, target) =>
+      vector.map((count, source) => Math.max(count, matrix[target][source]))
+    );
+    const vector = matrix[process];
+    const receiverClock = delivered[process];
+    const arrival = {sender, vector};
+    const queue = queues[process];
+    if (!canDeliver(arrival, receiverClock)) {
+      const blockers = vector.flatMap((count, source) =>
+        sentTo[process][source].slice(receiverClock[source], count - Number(source === sender))
+      );
+      result.set(event.id, {blockers, vector, delivered: receiverClock.slice()});
+      queue.push(arrival);
+      continue;
+    }
+
+    receiverClock[sender] = vector[sender];
+    for (let ready = queue.findIndex(message => canDeliver(message, receiverClock));
+      ready !== -1; ready = queue.findIndex(message => canDeliver(message, receiverClock))) {
+      const [message] = queue.splice(ready, 1);
+      receiverClock[message.sender] = message.vector[message.sender];
+    }
+  }
+  return result;
+}
+
+function renderBuffering() {
+  buffering = highlightBuffering ? findBuffering() : new Map();
+  $("highlight-buffering").setAttribute("aria-pressed", String(highlightBuffering));
+  const status = $("buffering-status");
+  status.hidden = !highlightBuffering;
+  status.textContent = buffering.size
+    ? `${buffering.size} ${buffering.size === 1 ? "receive would wait" : "receives would wait"} for an earlier message.`
+    : "No received messages would need buffering.";
+}
+
+function bufferLabel(event) {
+  const detail = buffering.get(event.id);
+  if (!detail) return "";
+  const {blockers, vector, delivered} = detail;
+  const reason = blockers.length ? `Would buffer · waiting for ${blockers.join(", ")}` : "Would buffer";
+  return `${reason} · Message vector ${timestamp(vector)} · Delivered vector ${timestamp(delivered)}`;
+}
 
 function clearAnswers() {
   revealed.clear();
@@ -262,6 +354,10 @@ function renderDiagram() {
   const marker = svgElement("marker", {id: "arrow", viewBox: "0 0 10 10", refX: 9, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto-start-reverse"});
   marker.append(svgElement("path", {d: "M 0 0 L 10 5 L 0 10 z", fill: "#176c60"}));
   defs.append(marker);
+  const bufferedMarker = marker.cloneNode(true);
+  bufferedMarker.id = "buffered-arrow";
+  bufferedMarker.firstChild.setAttribute("fill", "#993f2e");
+  defs.append(bufferedMarker);
   svg.append(defs);
   for (const process of state.processes) {
     const y = rows.get(process.id);
@@ -277,7 +373,12 @@ function renderDiagram() {
     const from = positions.get(event.send), to = positions.get(event.id);
     const direction = Math.sign(to.y - from.y);
     const number = ++messageNumber;
-    svg.append(svgElement("path", {d: `M ${from.x + 5} ${from.y + direction * 8} L ${to.x - 5} ${to.y - direction * 10}`, class: "message-line", "marker-end": "url(#arrow)"}));
+    const buffered = buffering.has(event.id);
+    svg.append(svgElement("path", {
+      d: `M ${from.x + 5} ${from.y + direction * 8} L ${to.x - 5} ${to.y - direction * 10}`,
+      class: buffered ? "message-line needs-buffering" : "message-line",
+      "marker-end": buffered ? "url(#buffered-arrow)" : "url(#arrow)"
+    }));
     const delay = metadata.get(event.id)?.delaySeconds;
     svg.append(svgElement("text", {x: (from.x + to.x) / 2 + 9, y: (from.y + to.y) / 2, class: "message-label"}, `m${number}${delay !== undefined ? ` · ${delay.toFixed(2)}s` : ""}`));
   }
@@ -286,12 +387,15 @@ function renderDiagram() {
     const name = `e${index + 1}`;
     const stamp = displayedTimestamp(event);
     const group = svgElement("g", {"data-event": event.id});
-    group.append(svgElement("title", {}, `${name}: ${labels.get(event.process)}, ${event.kind}, ${stamp}`));
+    const buffer = bufferLabel(event);
+    const isReply = Boolean(metadata.get(event.id)?.replyTo);
+    const type = isReply ? "broadcast reply" : event.kind;
+    group.append(svgElement("title", {}, [`${name}: ${labels.get(event.process)}, ${type}, ${stamp}`, buffer].filter(Boolean).join(" · ")));
     if (state.questionMode) {
       group.setAttribute("role", "button");
       group.setAttribute("tabindex", "0");
       group.setAttribute("class", "question-event");
-      group.setAttribute("aria-label", answerLabel(`${name} on ${labels.get(event.process)}`, stamp));
+      group.setAttribute("aria-label", [answerLabel(`${name} on ${labels.get(event.process)}`, stamp), buffer].filter(Boolean).join(". "));
       const hitWidth = Math.max(44, stamp.length * 7.2 + 12);
       group.append(svgElement("rect", {x: x - hitWidth / 2, y: y - 39, width: hitWidth, height: 73, rx: 6, class: "event-hit"}));
       group.addEventListener("click", () => showAnswer(event.id));
@@ -301,10 +405,14 @@ function renderDiagram() {
         showAnswer(event.id);
       });
     }
+    if (buffer) {
+      group.classList.add("needs-buffering");
+      group.append(svgElement("circle", {cx: x, cy: y, r: 12, class: "buffering-ring"}));
+    }
     const color = {internal: "#617476", send: "#176c60", receive: "#b86436"}[event.kind];
     group.append(svgElement("circle", {cx: x, cy: y, r: 7, fill: color, stroke: "white", "stroke-width": 3}));
     group.append(svgElement("text", {x, y: y - 22, class: "event-label", "text-anchor": "middle"}, stamp));
-    group.append(svgElement("text", {x, y: y + 27, class: "event-name", "text-anchor": "middle"}, name));
+    group.append(svgElement("text", {x, y: y + 27, class: "event-name", "text-anchor": "middle"}, isReply ? `${name} · reply` : name));
     svg.append(group);
   });
   svg.append(svgElement("text", {x: width - 30, y: height - 20, class: "time-label", "text-anchor": "end"}, "local event order →"));
@@ -323,10 +431,16 @@ function renderLedger() {
   }
   for (const event of computed.events) {
     const row = document.createElement("tr");
-    const delay = metadata.get(event.id)?.delaySeconds;
-    const message = event.kind === "receive" ? `from ${eventNames.get(event.send)}${delay !== undefined ? ` · ${delay.toFixed(2)}s` : ""}` : receives.has(event.id) ? `to ${receives.get(event.id).join(", ")}` : "—";
+    const {delaySeconds, replyTo} = metadata.get(event.id) ?? {};
+    const message = event.kind === "receive"
+      ? `from ${eventNames.get(event.send)}${delaySeconds !== undefined ? ` · ${delaySeconds.toFixed(2)}s` : ""}`
+      : receives.has(event.id) ? `to ${receives.get(event.id).join(", ")}` : "—";
     const name = eventNames.get(event.id);
-    for (const text of [name, names.get(event.process), event.broadcast ? "broadcast send" : event.kind, message]) {
+    const type = replyTo ? "broadcast reply" : event.broadcast ? "broadcast send" : event.kind;
+    const buffer = bufferLabel(event);
+    if (buffer) row.classList.add("needs-buffering");
+    const details = [replyTo && `reply to ${eventNames.get(replyTo)}`, message, buffer].filter(Boolean).join(" · ");
+    for (const text of [name, names.get(event.process), type, details]) {
       const cell = document.createElement("td");
       cell.textContent = text;
       row.append(cell);
@@ -362,6 +476,7 @@ function render() {
   const messages = computed.events.filter(event => event.kind === "receive").length;
   $("stats").textContent = `${state.processes.length} processes · ${computed.events.length} events · ${messages} messages`;
   $("question-hint").hidden = !state.questionMode || !computed.events.length;
+  renderBuffering();
   renderDiagram();
   renderLedger();
   renderDeduction();
@@ -380,17 +495,33 @@ $("quick-processes").addEventListener("click", () => change(next => {
   if (next.processes.length + missing.length > 16) throw new Error("There is not enough room to add P1–P4.");
   next.processes.push(...missing.map(name => ({id: crypto.randomUUID(), name})));
 }));
+
+function scheduleReceives(send, recipients, sentAt, min, max) {
+  return recipients.map(process => {
+    const delaySeconds = min + Math.random() * (max - min);
+    return {
+      id: crypto.randomUUID(), process, kind: "receive", send, delaySeconds,
+      deliverAt: sentAt + delaySeconds * 1000
+    };
+  });
+}
+
 $("broadcast-form").addEventListener("submit", event => {
   event.preventDefault();
   if (busy || pendingDeliveries().length) return;
   const senders = [...$("broadcast-processes").querySelectorAll("input:checked")].map(input => input.value);
   const min = $("delay-min").valueAsNumber, max = $("delay-max").valueAsNumber;
+  const {autoReply} = state;
+  const replyDelay = $("reply-delay").valueAsNumber;
   if (!senders.length) return error("Choose at least one broadcast sender.");
   if (!Number.isFinite(min) || !Number.isFinite(max) || min < 0.01 || max > 3600 || min > max) {
     return error("Choose a delay interval from 0.01 to 3600 seconds, with minimum ≤ maximum.");
   }
-  // Reserve capacity for every receive before starting any send.
-  if (state.events.length + senders.length * state.processes.length > 500) {
+  if (autoReply && (!Number.isFinite(replyDelay) || replyDelay < 0 || replyDelay > 2)) {
+    return error("Choose a reply wait from 0 to 2 seconds.");
+  }
+  const eventCount = senders.length * state.processes.length * (autoReply ? 2 : 1);
+  if (state.events.length + eventCount > 500) {
     return error("This broadcast would exceed the 500-event limit. Choose fewer senders or reset the execution.");
   }
   const started = Date.now();
@@ -398,14 +529,27 @@ $("broadcast-form").addEventListener("submit", event => {
   change(next => {
     next.delayMin = min;
     next.delayMax = max;
-    next.pending = [];
+    if (autoReply) next.replyDelay = replyDelay;
+    const processes = next.processes.map(process => process.id);
+    const replies = [];
     for (const process of senders) {
       const id = crypto.randomUUID();
       next.events.push({id, process, kind: "send", broadcast: true, batch});
-      for (const recipient of next.processes.filter(recipient => recipient.id !== process)) {
-        const delaySeconds = min + Math.random() * (max - min);
-        next.pending.push({id: crypto.randomUUID(), process: recipient.id, kind: "receive", send: id, delaySeconds, deliverAt: started + delaySeconds * 1000});
+      const arrivals = scheduleReceives(id, processes.filter(recipient => recipient !== process), started, min, max);
+      next.pending.push(...arrivals);
+      if (autoReply) {
+        // Stable order breaks equal deadlines by the original recipient order.
+        const first = arrivals.sort(byDeadline)[0];
+        replies.push({
+          id: crypto.randomUUID(), process: first.process, kind: "send",
+          broadcast: true, replyTo: id, deliverAt: first.deliverAt + replyDelay * 1000
+        });
       }
+    }
+    // Append replies after all original arrivals so a zero-wait reply follows its receive.
+    for (const reply of replies) {
+      const recipients = processes.filter(process => process !== reply.process);
+      next.pending.push(reply, ...scheduleReceives(reply.id, recipients, reply.deliverAt, min, max));
     }
   });
 });
@@ -425,6 +569,17 @@ $("message-form").addEventListener("submit", event => {
   });
 });
 $("message-from").addEventListener("change", destinations);
+$("auto-reply").addEventListener("change", event => {
+  state.autoReply = event.target.checked;
+  $("reply-delay").disabled = !state.autoReply;
+  save();
+});
+$("highlight-buffering").addEventListener("click", () => {
+  highlightBuffering = !highlightBuffering;
+  renderBuffering();
+  renderDiagram();
+  renderLedger();
+});
 $("mode").addEventListener("change", event => {
   const mode = event.target.value;
   change(next => { next.mode = mode; });
@@ -440,9 +595,13 @@ $("question-mode").addEventListener("change", event => {
   render();
 });
 $("undo").addEventListener("click", () => { if (history.length) change(() => clone(history.at(-1)), {undo: true}); });
-$("reset").addEventListener("click", () => change(() => ({...fresh(), mode: state.mode, allowInternal: state.allowInternal}), {resetAnswers: true}));
+$("reset").addEventListener("click", () => change(() => ({
+  ...fresh(), mode: state.mode, allowInternal: state.allowInternal,
+  autoReply: state.autoReply, replyDelay: state.replyDelay
+}), {resetAnswers: true}));
 $("example").addEventListener("click", () => change(() => ({
-  mode: state.mode, allowInternal: state.allowInternal,
+  ...fresh(), mode: state.mode, allowInternal: state.allowInternal,
+  autoReply: state.autoReply, replyDelay: state.replyDelay,
   processes: [{id: "p1", name: "P1"}, {id: "p2", name: "P2"}, {id: "p3", name: "P3"}],
   events: [
     {id: "a", process: "p1", kind: "internal"},
@@ -469,16 +628,19 @@ async function start() {
     if (saved !== undefined) {
       if (!saved || typeof saved.allowInternal !== "boolean") throw new Error("Invalid saved settings.");
       const pending = saved.pending ?? [];
-      if (!Array.isArray(pending) || pending.some(item => !item || item.kind !== "receive" || !Number.isFinite(item.deliverAt) || !Number.isFinite(item.delaySeconds) || item.delaySeconds < 0.01 || item.delaySeconds > 3600)) {
+      if (!Array.isArray(pending) || pending.some(item => !item || !Number.isFinite(item.deliverAt) ||
+        (item.kind === "send" ? item.broadcast !== true || typeof item.replyTo !== "string" :
+          item.kind !== "receive" || !Number.isFinite(item.delaySeconds) || item.delaySeconds < 0.01 || item.delaySeconds > 3600))) {
         throw new Error("Invalid pending deliveries.");
       }
       // Validate future deliveries too, before resuming a restored broadcast.
-      if (pending.length) await calculate({...saved, events: [...saved.events, ...pending]});
+      if (pending.length) await calculate({...saved, events: [...saved.events, ...[...pending].sort(byDeadline)]});
       const result = await calculate(saved);
       state = {...fresh(), ...saved, pending, mode: result.mode, processes: result.processes, questionMode: saved.questionMode === true};
       computed = result;
       $("delay-min").value = state.delayMin;
       $("delay-max").value = state.delayMax;
+      $("reply-delay").value = state.replyDelay;
       $("status").textContent = "Restored from this browser";
     } else {
       computed = await calculate(state);

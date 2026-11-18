@@ -55,6 +55,12 @@
             <div><label for="delay-min">Min delay (s)</label><input id="delay-min" type="number" min="0.01" max="3600" step="0.01" value="1" required></div>
             <div><label for="delay-max">Max delay (s)</label><input id="delay-max" type="number" min="0.01" max="3600" step="0.01" value="5" required></div>
           </div>
+          <label class="toggle"><input type="checkbox" id="auto-reply" checked> First recipient replies</label>
+          <div class="reply-settings">
+            <label for="reply-delay">Wait before replying (s)</label>
+            <input id="reply-delay" type="number" min="0" max="2" step="0.01" value="0" required>
+            <p class="hint">The reply uses the same network delay range and goes to the sender and other recipients.</p>
+          </div>
           <button id="broadcast-message" type="submit" class="primary full">Broadcast together <span>↗</span></button>
           <p class="hint">Selected senders start together. Every recipient gets an independent random delay within your interval. One send event per sender.</p>
           <p id="broadcast-status" class="hint" role="status" aria-live="polite"></p>
@@ -64,6 +70,10 @@
       <section class="visual-panel" aria-labelledby="timeline-heading">
         <div class="diagram-toolbar"><div><p class="step">EXECUTION TIMELINE</p><h2 id="timeline-heading">Lamport clocks</h2></div><div class="actions"><button id="example" class="secondary">Load example</button><button id="undo" class="quiet">Undo</button><button id="reset" class="quiet danger">Reset</button></div></div>
         <div class="diagram-meta"><span id="stats" aria-live="polite">0 processes · 0 events · 0 messages</span><span>local order →</span></div>
+        <div class="buffering-controls">
+          <button id="highlight-buffering" class="secondary" type="button" aria-pressed="false" aria-describedby="buffering-status">Highlight buffering</button>
+          <p id="buffering-status" role="status" hidden></p>
+        </div>
         <p id="question-hint" class="question-hint" hidden>Select a timestamp in the timeline or event ledger to reveal its value and calculation.</p>
         <div class="diagram-scroll" tabindex="0" role="region" aria-label="Scrollable execution timeline"><div id="empty" class="empty"><div class="empty-icon">↗</div><h3>A blank page in distributed time.</h3><p>Add a process to get started, or load the example to see clocks in motion.</p></div><svg id="timeline" role="img" aria-labelledby="svg-title svg-description" hidden></svg></div>
         <section id="deduction" class="deduction" aria-labelledby="deduction-title" hidden>
