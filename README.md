@@ -14,63 +14,14 @@ Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then from
 uv run clock-server
 ```
 
-Open **http://localhost:8888**. Stop with Ctrl+C. Python 3.11 or newer is supported. uv creates the environment and installs the package on first launch; that initial build may need internet access to fetch the build backend.
+Open **http://localhost:8888**.
+
+### GitHub Codespaces
+
+On GitHub, select **Code > Codespaces > Create codespace**. When setup finishes, run this in the Codespaces terminal:
 
 ```bash
-uv run clock-server --host 127.0.0.1 --port 8888
-uv run python -m clock_visualizer
+uv run clock-server --host 0.0.0.0
 ```
 
-## Use
-
-- Add named processes; their creation order defines vector component order.
-- **Create P1–P4** adds any missing processes with those names in one click, preserving your existing work.
-- Add internal events to a selected process. Uncheck **Allow internal events** to disable new internal events; existing events still affect clocks.
-- Select distinct source and destination processes and send a message. This adds a send and its receive together with immediate delivery.
-- For a **broadcast**, select one or more senders and choose minimum and maximum delivery delays (default 1–5 seconds; customizable from 0.01 to 3600 seconds). **Broadcast together** creates one send event per selected sender at the same start time. Each sends to every other process with an independently sampled uniform random delay. Receives appear live in delivery order; arrows and ledger entries show the sampled delays. These physical delays do not advance logical clocks by seconds.
-- With **First recipient replies** enabled, the first process to receive each broadcast sends one reply to the original sender and the other recipients. The reply is local to its own sender and uses the same network delay range for the other processes. Set **Wait before replying** from 0 to 2 seconds. The default is 0 seconds, and ties follow process creation order.
-- Select **Vector clocks for causal ordering** to replay the causal broadcast algorithm in `07-DS-Time.pdf`, slides 40–42. **Load example** shows the lecture’s scenario in which P3 receives P2’s reply before P1’s broadcast. **Highlight buffering** marks messages that wait, with both vectors, the failed comparisons, and the missing broadcasts in the ledger and timeline tooltip.
-- While broadcasts are in flight, editing pauses. **Undo** removes the entire broadcast batch and **Reset** clears the workspace, canceling pending deliveries. Refreshing resumes saved deliveries with their original deadlines. The server must remain available for deliveries to appear; delayed browser timers may display them late, but their sampled order is preserved.
-- Switch the clock model to relabel the same execution. Lamport is the default for new workspaces.
-- Turn on **Question mode** to replace event timestamps with `?`. Select a timestamp in the timeline or event ledger to reveal it and see the previous local clock, any incoming message timestamp, and the calculation. The setting is saved in the browser. Refreshing starts the questions over.
-- **Load example** demonstrates a three-process execution. **Undo** reverses the latest change (including messages, settings, example loading, and reset). The most recent 100 actions are available until refresh.
-- **Reset** clears the execution and processes and preserves the clock model, internal-event setting, and Question mode.
-- The workspace is saved in this browser automatically. Refresh restores it; browser tabs hold independent live editors, and the most recently saved tab supplies the next restored session. Undo history is not saved.
-- Scroll wide diagrams horizontally, or expand the event ledger for accessible tabular timestamps. Event names e1, e2, … follow construction order. Only local lane order and message arrows imply causality; horizontal alignment across processes does not.
-
-This version supports up to 16 processes and 500 events, including reserved reply sends and pending receives. Editing is append-only with undo/reset. Inserting events into existing timelines and moving events are outside its scope. Loading the example replaces the execution with its bundled events even when internal-event creation is disabled.
-
-## Clock rules
-
-All clocks start at zero. Each label is the clock **after** that event. In the event-clock models below, sends carry their event’s timestamp.
-
-| Model | Internal or send on Pi | Receive on Pi, with timestamp t |
-| --- | --- | --- |
-| Lamport (default) | `L = L + 1` | `L = max(L, t) + 1` |
-| Vector | `V[i] = V[i] + 1` | Componentwise `V[j] = max(V[j], t[j])`, then `V[i] += 1` |
-
-Standard vector clocks distinguish concurrent events when neither vector is componentwise less than or equal to the other.
-
-For causal ordering, each process keeps one vector `V` and an initially empty buffer. Before broadcasting, process `i` increments `V[i]` and attaches the full vector to the message. When a broadcast from `i` arrives with timestamp `T`, the receiver adds it to the buffer. It repeatedly delivers any buffered message with `T[i] = V[i] + 1` and `T[k] ≤ V[k]` for every `k ≠ i`. Each delivery merges the message into the local clock using componentwise max. The model assumes reliable delivery to a fixed group. Internal events and point-to-point messages leave the causal clock unchanged. The timeline retains arrival order and shows the clock after any messages released by that arrival.
-
-Adding another process recomputes vectors with an additional zero component for earlier events.
-
-## Development and verification
-
-```bash
-uv run python -m unittest discover -s tests -v
-node --check src/clock_visualizer/static/app.js
-uv build
-```
-
-The Python suite exercises hand-calculated message chains in all modes, vector expansion, independent events, invalid executions, the HTTP calculation endpoint and static serving. Tests use standard-library unittest and actual HTTP requests on an ephemeral localhost port. Node is optional and used only for development checks.
-
-An optional real-browser smoke test requires Node 22+ and a Chromium executable, with no npm dependencies:
-
-```bash
-CHROMIUM_EXECUTABLE=/path/to/chromium node tests/browser_smoke.mjs
-```
-
-It starts a temporary local server and browser profile, exercises editing, mode switching, messages, the internal-event toggle, undo/reset, saved-session restoration, invalid saved data, safe rendering of names, long vectors and mobile layout, then closes both processes. Set `SCREENSHOT_PATH=/tmp/clocks.png` to save a screenshot.
-
-The server is intended for local educational use and binds to loopback by default. `POST /api/calculate` accepts `{mode, processes: [{id, name}], events: [{id, process, kind, send?, broadcast?}]}` and returns normalized processes and event timestamps. Receive references must point to earlier sends on distinct processes; ordinary sends support one receiver, while sends with `broadcast: true` support one receive per other process. Errors return JSON with an `error` string. Requests are limited to 256 KiB.
+In the **Ports** tab, select **Open in Browser** for port **8888**.

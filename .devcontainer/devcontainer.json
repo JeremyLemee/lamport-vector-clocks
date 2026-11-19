@@ -1,0 +1,14 @@
+{
+  "name": "Logical clock visualizer",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "vscode",
+  "postCreateCommand": "uv sync --locked",
+  "forwardPorts": [8888],
+  "portsAttributes": {
+    "8888": {
+      "label": "Logical clock visualizer"
+    }
+  }
+}
