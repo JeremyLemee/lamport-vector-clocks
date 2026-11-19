@@ -338,8 +338,12 @@ try {
   await click("example");
   await click("highlight-buffering");
   assert.equal(await evaluate('document.querySelector("#timeline .needs-buffering[data-event]").dataset.event'), "john-early");
+  await evaluate('document.querySelector("[data-event=bob]").dispatchEvent(new MouseEvent("click"))');
+  assert.match(await value("deduction-info"), /carries \[1, 1, 0\]/);
+  assert.match(await value("deduction-result"), /\[1, 1, 0\]/);
   await evaluate('document.querySelector("#event-rows tr:last-child button").click()');
-  assert.match(await value("deduction-result"), /Released 1 buffered message/);
+  assert.match(await value("deduction-info"), /carries \[1, 0, 0\]/);
+  assert.match(await value("deduction-result"), /max → \[1, 0, 0\].*Released 1 buffered message → \[1, 1, 0\]/);
   await command("Page.reload");
   await waitFor(() => evaluate('document.getElementById("status")?.textContent.includes("Restored")'), "question mode restoration");
   assert.equal(await lastStamp(), "?");

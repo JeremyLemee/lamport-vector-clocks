@@ -243,12 +243,19 @@ function renderDeduction() {
     const detail = event.delivery;
     let result = `Vector stays at ${after}.`;
     if (event.broadcast) {
-      $("deduction-info").textContent = "Broadcast increments the sender’s component and attaches the full resulting vector.";
+      $("deduction-info").textContent = `This broadcast carries ${after} to every recipient.`;
       result = `Increment ${component} from ${before[processIndex]} to ${event.timestamp[processIndex]} → ${after}.`;
     } else if (detail) {
       $("deduction-info").textContent = `Message from e${sendIndex + 1} carries ${timestamp(detail.vector)}.`;
-      const release = detail.released ? ` Released ${detail.released} buffered ${detail.released === 1 ? "message" : "messages"}.` : "";
-      result = detail.failures.length ? bufferingExplanation(detail) : `Delivery checks pass. Merge componentwise using max → ${after}.${release}`;
+      if (detail.failures.length) {
+        result = bufferingExplanation(detail);
+      } else {
+        const merged = detail.delivered.map((count, i) => Math.max(count, detail.vector[i]));
+        result = `Delivery checks pass. Merge componentwise using max → ${timestamp(merged)}.`;
+        if (detail.released) {
+          result += ` Released ${detail.released} buffered ${detail.released === 1 ? "message" : "messages"} → ${after}.`;
+        }
+      }
     } else {
       $("deduction-info").textContent = "Only broadcasts and their delivery update this clock.";
     }
@@ -447,6 +454,9 @@ function render() {
   $("mode-summary").textContent = summary;
   $("rule-title").textContent = title;
   $("rule-body").textContent = body;
+  $("message-hint").textContent = state.mode === "causal"
+    ? "Point-to-point messages leave the causal clock unchanged. Use Broadcast together to advance it."
+    : "Adds a send and a receive together. Delivery is immediate.";
   $("vector-order").textContent = state.mode === "lamport" ? "Send events attach their current clock to the message." : `Vector component order: [${state.processes.map(process => process.name).join(", ")}].`;
   const messages = computed.events.filter(event => event.kind === "receive").length;
   $("stats").textContent = `${state.processes.length} processes · ${computed.events.length} events · ${messages} messages`;
