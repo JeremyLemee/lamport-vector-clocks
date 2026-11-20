@@ -181,7 +181,15 @@ function renderControls() {
 }
 
 const timestamp = value => Array.isArray(value) ? `[${value.join(", ")}]` : String(value);
-const displayedTimestamp = event => state.questionMode && !revealed.has(event.id) ? "?" : timestamp(event.timestamp);
+const deliveryVector = ({delivered, vector}) => delivered.map((count, i) => Math.max(count, vector[i]));
+
+function eventTimestamp(event) {
+  return event.delivery?.failures.length
+    ? `${timestamp(deliveryVector(event.delivery))} (expected)`
+    : timestamp(event.timestamp);
+}
+
+const displayedTimestamp = event => state.questionMode && !revealed.has(event.id) ? "?" : eventTimestamp(event);
 const answerLabel = (name, stamp) => stamp === "?" ? `Show answer for ${name}` : `Show calculation for ${name}, ${stamp}`;
 
 function renderBuffering() {
@@ -248,10 +256,9 @@ function renderDeduction() {
     } else if (detail) {
       $("deduction-info").textContent = `Message from e${sendIndex + 1} carries ${timestamp(detail.vector)}.`;
       if (detail.failures.length) {
-        result = bufferingExplanation(detail);
+        result = `${bufferingExplanation(detail)}. Expected vector ${timestamp(deliveryVector(detail))} after merging. The delivered clock stays at ${after} at this arrival.`;
       } else {
-        const merged = detail.delivered.map((count, i) => Math.max(count, detail.vector[i]));
-        result = `Delivery checks pass. Merge componentwise using max → ${timestamp(merged)}.`;
+        result = `Delivery checks pass. Merge componentwise using max → ${timestamp(deliveryVector(detail))}.`;
         if (detail.released) {
           result += ` Released ${detail.released} buffered ${detail.released === 1 ? "message" : "messages"} → ${after}.`;
         }
@@ -308,7 +315,7 @@ function renderDiagram() {
   const rows = new Map(state.processes.map((process, i) => [process.id, 86 + i * 115]));
   const positions = new Map();
   const columns = new Map(state.processes.map(process => [process.id, 0]));
-  const longest = Math.max(1, ...computed.events.map(event => timestamp(event.timestamp).length));
+  const longest = Math.max(1, ...computed.events.map(event => eventTimestamp(event).length));
   const spacing = Math.max(90, longest * 7.2 + 30);
   const batches = new Map();
   const metadata = new Map(state.events.map(event => [event.id, event]));
@@ -346,18 +353,25 @@ function renderDiagram() {
     svg.append(svgElement("text", {x: 145, y: y - 15, class: "lane-initial", "text-anchor": "middle"}, "0"));
   }
   let messageNumber = 0;
+  const broadcastSends = new Set(computed.events.filter(event => event.broadcast).map(event => event.id));
   for (const event of computed.events.filter(event => event.kind === "receive")) {
     const from = positions.get(event.send), to = positions.get(event.id);
     const direction = Math.sign(to.y - from.y);
     const number = ++messageNumber;
     const buffered = highlightBuffering && Boolean(event.delivery?.failures.length);
+    const startX = from.x + 5, startY = from.y + direction * 8;
+    const endX = to.x - 5, endY = to.y - direction * 10;
+    const midX = (startX + endX) / 2, midY = (startY + endY) / 2;
+    // Bow broadcast arrows in their direction of travel so reciprocal arrows
+    // have separate midpoints and fan-out arrows diverge across the lanes.
+    const bend = broadcastSends.has(event.send) ? direction * 36 : 0;
+    const path = bend ? `Q ${midX + bend} ${midY} ${endX} ${endY}` : `L ${endX} ${endY}`;
     svg.append(svgElement("path", {
-      d: `M ${from.x + 5} ${from.y + direction * 8} L ${to.x - 5} ${to.y - direction * 10}`,
+      d: `M ${startX} ${startY} ${path}`,
       class: buffered ? "message-line needs-buffering" : "message-line",
       "marker-end": buffered ? "url(#buffered-arrow)" : "url(#arrow)"
     }));
-    const delay = metadata.get(event.id)?.delaySeconds;
-    svg.append(svgElement("text", {x: (from.x + to.x) / 2 + 9, y: (from.y + to.y) / 2, class: "message-label"}, `m${number}${delay !== undefined ? ` · ${delay.toFixed(2)}s` : ""}`));
+    svg.append(svgElement("text", {x: midX + bend / 2 + 9, y: midY, class: "message-label"}, `m${number}`));
   }
   computed.events.forEach((event, index) => {
     const {x, y} = positions.get(event.id);
@@ -408,9 +422,9 @@ function renderLedger() {
   }
   for (const event of computed.events) {
     const row = document.createElement("tr");
-    const {delaySeconds, replyTo} = metadata.get(event.id) ?? {};
+    const replyTo = metadata.get(event.id)?.replyTo;
     const message = event.kind === "receive"
-      ? `from ${eventNames.get(event.send)}${delaySeconds !== undefined ? ` · ${delaySeconds.toFixed(2)}s` : ""}`
+      ? `from ${eventNames.get(event.send)}`
       : receives.has(event.id) ? `to ${receives.get(event.id).join(", ")}` : "—";
     const name = eventNames.get(event.id);
     const type = replyTo ? "broadcast reply" : event.broadcast ? "broadcast send" : event.kind;

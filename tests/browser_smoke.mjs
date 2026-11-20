@@ -140,7 +140,9 @@ try {
   assert.match(await value("stats"), /^4 processes · 8 events · 6 messages$/);
   assert.deepEqual(await evaluate('computed.events.map(e => e.timestamp)'), [[1,0,0,0], [0,1,0,0], [1,2,0,0], [1,0,1,0], [1,0,0,1], [2,1,0,0], [1,1,2,0], [1,1,0,2]]);
   assert.equal(await evaluate('document.querySelectorAll(".message-line").length'), 6);
-  assert.match(await value("event-rows"), /0\.20s/);
+  assert.doesNotMatch(await value("event-rows"), /\d+\.\d+s/);
+  assert.deepEqual(await evaluate('[...document.querySelectorAll(".message-label")].map(label => label.textContent)'),
+    ["m1", "m2", "m3", "m4", "m5", "m6"]);
   await click("undo");
   assert.match(await value("stats"), /^4 processes · 0 events/);
   // Reset cancels pending deliveries, including callbacks already scheduled.
@@ -165,6 +167,7 @@ try {
   await click("reset");
   await click("quick-processes");
   await click("auto-reply");
+  await select("mode", "causal");
   await evaluate(`(() => {
     document.querySelector('#broadcast-processes input').checked = true;
     document.getElementById('reply-delay').value = '0.1';
@@ -185,6 +188,11 @@ try {
   })()`), 100, "The reply send is scheduled 0.1 seconds after the first receive");
   await command("Page.reload");
   await waitFor(() => evaluate('document.getElementById("status")?.textContent.includes("Restored")'), "queued reply restoration");
+  await waitFor(() => evaluate('state.pending.length && computed.events.some(e => e.delivery?.failures.length)'), "out-of-order receive while broadcast is in flight");
+  assert.equal(await evaluate(`(() => {
+    const buffered = computed.events.find(e => e.delivery?.failures.length);
+    return document.querySelector('[data-event="' + buffered.id + '"] .event-label').textContent;
+  })()`), "[1, 0, 1, 0] (expected)");
   await idle();
   assert.match(await value("stats"), /^4 processes · 8 events · 6 messages$/);
   assert.deepEqual(await evaluate(`(() => {
@@ -194,17 +202,18 @@ try {
     return [name(first.process), name(reply.process), reply.replyTo === original.id,
       state.events.filter(e => e.send === reply.id).map(e => name(e.process)).sort()];
   })()`), ["P3", "P3", true, ["P1", "P2", "P4"]]);
-  await select("mode", "causal");
   assert.equal(await evaluate('document.querySelector(".buffering-controls").hidden'), false);
   await click("highlight-buffering");
   assert.deepEqual(await evaluate('[...document.querySelectorAll("#event-rows .needs-buffering")].map(row => row.cells[1].textContent)'), ["P2"]);
   assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /Message vector \[1, 0, 1, 0\].*Receiver vector \[0, 0, 0, 0\]/);
   assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /P1 \(dependency\): 1 > 0 delivered/);
   assert.match(await evaluate('document.querySelector("#event-rows .needs-buffering").textContent'), /Missing 1 message from P1/);
-  assert.equal(await evaluate('document.querySelector("#event-rows .needs-buffering td:last-child").textContent'), "[0, 0, 0, 0]");
+  assert.equal(await evaluate('document.querySelector("#event-rows .needs-buffering td:last-child").textContent'), "[1, 0, 1, 0] (expected)");
   await click("question-mode");
+  assert.equal(await evaluate('document.querySelector("#event-rows .needs-buffering button").textContent'), "?");
   await evaluate('document.querySelector("#event-rows .needs-buffering button").click()');
   assert.match(await value("deduction-result"), /P1 \(dependency\): 1 > 0 delivered/);
+  assert.match(await value("deduction-result"), /Expected vector \[1, 0, 1, 0\].*stays at \[0, 0, 0, 0\]/);
   await click("question-mode");
   assert.equal(await evaluate('document.querySelectorAll("#timeline g.needs-buffering").length'), 1);
   for (const mode of ["lamport", "vector"]) {
@@ -214,6 +223,36 @@ try {
   }
   await select("mode", "causal");
   assert.equal(await evaluate('document.querySelectorAll(".needs-buffering").length'), 0);
+  await evaluate(`change(next => {
+    const [one, two, three] = next.processes.map(p => p.id);
+    next.events = [
+      {id: 's1', kind: 'send', process: one, broadcast: true, batch: 'together'},
+      {id: 's2', kind: 'send', process: two, broadcast: true, batch: 'together'},
+      {id: 'r1', kind: 'receive', process: two, send: 's1'},
+      {id: 'r2', kind: 'receive', process: one, send: 's2'},
+      {id: 'i1', kind: 'internal', process: three},
+      {id: 'i2', kind: 'internal', process: three},
+      {id: 'r3', kind: 'receive', process: three, send: 's1'}
+    ];
+  })`);
+  assert.equal(await evaluate(`(() => {
+    const [first, second] = [...document.querySelectorAll('.message-label')].map(label => label.getBBox());
+    return first.x + first.width <= second.x || second.x + second.width <= first.x;
+  })()`), true, "Reciprocal broadcast arrows have room for both message labels");
+  assert.equal(await evaluate(`(() => {
+    const [near, , far] = document.querySelectorAll('.message-line');
+    const y = near.getPointAtLength(near.getTotalLength() / 2).y;
+    function xAtY(path) {
+      let start = 0, end = path.getTotalLength();
+      while (end - start > 0.05) {
+        const middle = (start + end) / 2;
+        if (path.getPointAtLength(middle).y < y) start = middle;
+        else end = middle;
+      }
+      return path.getPointAtLength((start + end) / 2).x;
+    }
+    return Math.abs(xAtY(near) - xAtY(far)) >= 5;
+  })()`), true, "Nearly collinear arrows from the same broadcast have distinct paths");
   await evaluate(`change(next => {
     const [sender, receiver, , other] = next.processes.map(p => p.id);
     next.events = [
